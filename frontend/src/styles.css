@@ -1,0 +1,73 @@
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+  background: #0a0f17;
+  color: #dbe7f3;
+  font-size: 14px;
+}
+.app { max-width: 1200px; margin: 0 auto; padding: 16px; }
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 24px;
+  border-bottom: 1px solid #223;
+  padding-bottom: 8px;
+  margin-bottom: 16px;
+}
+h1 { font-size: 18px; margin: 0; }
+h2 { font-size: 15px; margin: 0 0 10px; }
+h3 { font-size: 13px; margin: 8px 0; }
+nav button {
+  background: transparent;
+  border: 1px solid #2a3550;
+  color: #9fb3cc;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+nav button.active { background: #13304f; color: #e8f2ff; border-color: #3a6ea5; }
+.panel {
+  background: #101826;
+  border: 1px solid #1e2c42;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 8px 0; }
+.hint { color: #7890ad; font-size: 12px; }
+.error { color: #ff9490; margin-top: 8px; }
+.er { color: #ff7b72; }
+.ok { color: #7ee787; }
+input, select, button {
+  background: #0c1320;
+  color: #dbe7f3;
+  border: 1px solid #2a3a55;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font: inherit;
+}
+button { cursor: pointer; }
+button:disabled { opacity: 0.45; cursor: default; }
+.waveform { margin-top: 8px; }
+.vpbar {
+  display: flex;
+  justify-content: space-between;
+  color: #7890ad;
+  font-size: 12px;
+  margin-top: 2px;
+}
+.decodeout { margin-top: 10px; display: grid; gap: 4px; }
+code { color: #b6e3ff; }
+.marker-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+table { border-collapse: collapse; width: 100%; font-size: 12px; }
+th, td {
+  border-bottom: 1px solid #1b2740;
+  text-align: left;
+  padding: 3px 6px;
+  vertical-align: top;
+}
+.bits { font-family: ui-monospace, monospace; letter-spacing: 1px; color: #7ee787; }
