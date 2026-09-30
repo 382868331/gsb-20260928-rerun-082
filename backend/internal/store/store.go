@@ -35,6 +35,15 @@ func New() *Store {
 	}
 }
 
+func supportsProtocol(protocol string) bool {
+	for _, supported := range decode.SupportedProtocols() {
+		if protocol == supported {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Store) CreateCapture(name string, channels []string) model.Capture {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -92,7 +101,7 @@ func (s *Store) CreateConfig(cfg model.Config) (model.Config, error) {
 	if _, ok := s.captures[cfg.CaptureID]; !ok {
 		return model.Config{}, fmt.Errorf("unknown capture %q", cfg.CaptureID)
 	}
-	if cfg.Protocol != "uart" {
+	if !supportsProtocol(cfg.Protocol) {
 		return model.Config{}, fmt.Errorf("supported protocols are: %v", decode.SupportedProtocols())
 	}
 	cfg.Version = len(s.configs[cfg.CaptureID]) + 1
@@ -100,7 +109,7 @@ func (s *Store) CreateConfig(cfg model.Config) (model.Config, error) {
 		cfg.ID = newID()
 	}
 	if cfg.Name == "" {
-		cfg.Name = fmt.Sprintf("UART 配置 v%d", cfg.Version)
+		cfg.Name = fmt.Sprintf("%s 配置 v%d", cfg.Protocol, cfg.Version)
 	}
 	cfg.CreatedAt = time.Now().UTC()
 	s.configs[cfg.CaptureID] = append(s.configs[cfg.CaptureID], cfg)

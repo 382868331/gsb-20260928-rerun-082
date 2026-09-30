@@ -1,10 +1,18 @@
-import type { Config, Result } from '../types';
+import type { Config, Marker, Result } from '../types';
 
 function formatNs(ns: number) {
   return `${(ns / 1000).toFixed(2)} µs`;
 }
 
-export function ResultList({ configs, results, selectedId, onSelect }: { configs: Config[]; results: Result[]; selectedId?: string; onSelect: (id: string) => void }) {
+interface Props {
+  configs: Config[];
+  results: Result[];
+  selectedId?: string;
+  onSelect: (id: string) => void;
+  onLocate: (marker: Marker) => void;
+}
+
+export function ResultList({ configs, results, selectedId, onSelect, onLocate }: Props) {
   return (
     <section className="panel">
       <h2>结果版本</h2>
@@ -20,11 +28,11 @@ export function ResultList({ configs, results, selectedId, onSelect }: { configs
         })}
       </div>
       {results.find((result) => result.id === selectedId)?.markers.map((marker) => (
-        <div key={marker.id} className={`marker-row ${marker.severity}`}>
+        <button key={marker.id} className={`marker-row ${marker.severity}`} onClick={() => onLocate(marker)} title="定位到原始采样区间">
           <code>{formatNs(marker.startNs)} – {formatNs(marker.endNs)}</code>
           <span>{marker.label}</span>
           {marker.rawBits && <small>{marker.rawBits}</small>}
-        </div>
+        </button>
       ))}
     </section>
   );

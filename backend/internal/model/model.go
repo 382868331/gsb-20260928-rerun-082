@@ -35,14 +35,27 @@ type UARTParameters struct {
 	ClockTolerance float64 `json:"clockTolerance"`
 }
 
+// SPIParameters 描述时钟同步串行（SPI 风格）解码配置。
+// CSChannel 为 -1 表示不使用片选，整个记录视为连续报文。
+type SPIParameters struct {
+	ClockChannel int    `json:"clockChannel"`
+	DataChannel  int    `json:"dataChannel"`
+	CSChannel    int    `json:"csChannel"`
+	CSActive     uint8  `json:"csActive"`
+	ClockEdge    string `json:"clockEdge"`
+	BitOrder     string `json:"bitOrder"`
+	BitsPerWord  int    `json:"bitsPerWord"`
+}
+
 type Config struct {
-	ID         string         `json:"id"`
-	CaptureID  string         `json:"captureId"`
-	Version    int            `json:"version"`
-	Protocol   string         `json:"protocol"`
-	Name       string         `json:"name"`
-	Parameters UARTParameters `json:"parameters"`
-	CreatedAt  time.Time      `json:"createdAt"`
+	ID            string         `json:"id"`
+	CaptureID     string         `json:"captureId"`
+	Version       int            `json:"version"`
+	Protocol      string         `json:"protocol"`
+	Name          string         `json:"name"`
+	Parameters    UARTParameters `json:"parameters"`
+	SPIParameters *SPIParameters `json:"spiParameters,omitempty"`
+	CreatedAt     time.Time      `json:"createdAt"`
 }
 
 type Marker struct {

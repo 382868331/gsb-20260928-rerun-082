@@ -1,4 +1,4 @@
-import type { Capture, Chunk, Config, Result } from '../types';
+import type { Capture, Chunk, Config, DemoCapture, Result, SPIParameters, UARTParameters } from '../types';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -10,13 +10,13 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  demo: () => request<{ capture: Capture; chunks: Chunk[]; config: Config; result: Result }>('/api/demo', { method: 'POST' }),
+  demo: () => request<{ captures: DemoCapture[] }>('/api/demo', { method: 'POST' }),
   captures: () => request<Capture[]>('/api/captures'),
   capture: (id: string) => request<{ capture: Capture; chunks: Chunk[] }>(`/api/captures/${id}`),
-  createConfig: (captureId: string, parameters: Config['parameters'], name: string) =>
+  createConfig: (captureId: string, protocol: string, name: string, parameters: UARTParameters, spiParameters?: SPIParameters) =>
     request<{ config: Config; result: Result }>(`/api/captures/${captureId}/configs`, {
       method: 'POST',
-      body: JSON.stringify({ protocol: 'uart', name, parameters }),
+      body: JSON.stringify({ protocol, name, parameters, spiParameters }),
     }),
   configs: (captureId: string) => request<Config[]>(`/api/captures/${captureId}/configs`),
   results: (captureId: string) => request<Result[]>(`/api/captures/${captureId}/results`),

@@ -1,10 +1,11 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Chunk, Marker } from '../types';
 
 interface Props {
   chunks: Chunk[];
   channelNames: string[];
   markers: Marker[];
+  focus?: { marker: Marker; seq: number };
 }
 
 interface Viewport {
@@ -21,7 +22,7 @@ function formatNs(ns: number): string {
   return `${ns.toFixed(0)} ns`;
 }
 
-export function WaveformTrack({ chunks, channelNames, markers }: Props) {
+export function WaveformTrack({ chunks, channelNames, markers, focus }: Props) {
   const ordered = useMemo(() => [...chunks].sort((a, b) => a.index - b.index), [chunks]);
   const span = useMemo(() => {
     if (ordered.length === 0) return { start: 0, end: 1, interval: 1 };
@@ -34,6 +35,17 @@ export function WaveformTrack({ chunks, channelNames, markers }: Props) {
   }, [ordered]);
   const [viewport, setViewport] = useState<Viewport>(() => ({ startNs: 0, nsPerPixel: Math.max(1, span.end / WIDTH) }));
   const svgRef = useRef<SVGSVGElement>(null);
+
+  useEffect(() => {
+    if (!focus) return;
+    const { startNs, endNs } = focus.marker;
+    const center = (startNs + endNs) / 2;
+    const width = Math.max(endNs - startNs, span.interval) * 6;
+    const nsPerPixel = Math.min(Math.max(span.interval / 8, width / WIDTH), span.end / 80);
+    setViewport({ startNs: center - (nsPerPixel * WIDTH) / 2, nsPerPixel });
+    // 仅在用户点击定位时触发
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus?.seq]);
 
   const timeToX = (time: number) => (time - viewport.startNs) / viewport.nsPerPixel;
   const xToTime = (x: number) => viewport.startNs + x * viewport.nsPerPixel;

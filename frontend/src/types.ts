@@ -26,6 +26,16 @@ export interface UARTParameters {
   clockTolerance: number;
 }
 
+export interface SPIParameters {
+  clockChannel: number;
+  dataChannel: number;
+  csChannel: number;
+  csActive: 0 | 1;
+  clockEdge: 'rising' | 'falling';
+  bitOrder: 'msb' | 'lsb';
+  bitsPerWord: number;
+}
+
 export interface Config {
   id: string;
   captureId: string;
@@ -33,6 +43,7 @@ export interface Config {
   protocol: string;
   name: string;
   parameters: UARTParameters;
+  spiParameters?: SPIParameters;
   createdAt: string;
 }
 
@@ -59,4 +70,11 @@ export interface Result {
   validBytes: number;
   errorCount: number;
   markers: Marker[];
+}
+
+export interface DemoCapture {
+  capture: Capture;
+  chunks: Chunk[];
+  configs: Config[];
+  results: Result[];
 }

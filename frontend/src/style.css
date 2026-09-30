@@ -83,8 +83,14 @@ text { fill: #9fb0c4; font-size: 12px; }
   margin-top: 8px;
   background: #0d1722;
   border-radius: 6px;
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
 }
+.marker-row:hover { border-color: #67d2a5; }
 .marker-row.error { border-color: #ff635b; }
 .marker-row small { grid-column: 2; color: #7f90a5; }
+.capture-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+.capture-tabs button.selected { border-color: #67d2a5; background: #173228; }
 .loading { padding: 50px; }
 @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } }

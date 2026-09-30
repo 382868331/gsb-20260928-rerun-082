@@ -7,16 +7,17 @@ import (
 )
 
 type Decoder interface {
-	Validate(model.UARTParameters) error
+	Validate(model.Config) error
 	Decode(captureName string, chunks []model.Chunk, cfg model.Config) model.Result
 }
 
 var registry = map[string]Decoder{
 	"uart": &UARTDecoder{},
+	"spi":  &SPIDecoder{},
 }
 
 func SupportedProtocols() []string {
-	return []string{"uart"}
+	return []string{"uart", "spi"}
 }
 
 func Decode(captureName string, chunks []model.Chunk, cfg model.Config) (model.Result, error) {
@@ -24,7 +25,7 @@ func Decode(captureName string, chunks []model.Chunk, cfg model.Config) (model.R
 	if !ok {
 		return model.Result{}, fmt.Errorf("unsupported protocol %q", cfg.Protocol)
 	}
-	if err := decoder.Validate(cfg.Parameters); err != nil {
+	if err := decoder.Validate(cfg); err != nil {
 		return model.Result{}, err
 	}
 	return decoder.Decode(captureName, chunks, cfg), nil
