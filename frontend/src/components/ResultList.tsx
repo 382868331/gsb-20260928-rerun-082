@@ -13,7 +13,7 @@ export function ResultList({ configs, results, selectedId, onSelect }: { configs
           const config = configs.find((item) => item.id === result.configId);
           return (
             <button key={result.id} className={selectedId === result.id ? 'selected' : ''} onClick={() => onSelect(result.id)}>
-              <strong>v{result.configVersion} {config?.name ?? result.protocol}</strong>
+              <strong>v{result.configVersion} [{result.protocol.toUpperCase()}] {config?.name ?? '未命名配置'}</strong>
               <span>{result.validBytes} 个有效字节 · {result.errorCount} 个错误</span>
             </button>
           );

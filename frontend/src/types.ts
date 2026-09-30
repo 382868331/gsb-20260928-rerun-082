@@ -26,13 +26,24 @@ export interface UARTParameters {
   clockTolerance: number;
 }
 
+export interface SPIParameters {
+  clockChannel: number;
+  dataChannel: number;
+  csChannel: number;
+  csActive: 0 | 1;
+  bitOrder: 'msb' | 'lsb';
+  clockEdge: 'rising' | 'falling';
+  bitsPerWord: number;
+}
+
 export interface Config {
   id: string;
   captureId: string;
   version: number;
-  protocol: string;
+  protocol: 'uart' | 'spi';
   name: string;
   parameters: UARTParameters;
+  spiParameters?: SPIParameters;
   createdAt: string;
 }
 
@@ -59,4 +70,11 @@ export interface Result {
   validBytes: number;
   errorCount: number;
   markers: Marker[];
+}
+
+export interface CaptureBundle {
+  capture: Capture;
+  chunks: Chunk[];
+  configs: Config[];
+  results: Result[];
 }

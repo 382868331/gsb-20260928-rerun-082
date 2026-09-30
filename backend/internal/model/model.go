@@ -35,6 +35,16 @@ type UARTParameters struct {
 	ClockTolerance float64 `json:"clockTolerance"`
 }
 
+type SPIParameters struct {
+	ClockChannel int    `json:"clockChannel"`
+	DataChannel  int    `json:"dataChannel"`
+	CSChannel    int    `json:"csChannel"`
+	CSActive     uint8  `json:"csActive"`
+	BitOrder     string `json:"bitOrder"`
+	ClockEdge    string `json:"clockEdge"`
+	BitsPerWord  int    `json:"bitsPerWord"`
+}
+
 type Config struct {
 	ID         string         `json:"id"`
 	CaptureID  string         `json:"captureId"`
@@ -42,6 +52,7 @@ type Config struct {
 	Protocol   string         `json:"protocol"`
 	Name       string         `json:"name"`
 	Parameters UARTParameters `json:"parameters"`
+	SPI        *SPIParameters `json:"spiParameters,omitempty"`
 	CreatedAt  time.Time      `json:"createdAt"`
 }
 

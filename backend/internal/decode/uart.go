@@ -31,7 +31,8 @@ type uartFrame struct {
 	clockError     int64
 }
 
-func (d *UARTDecoder) Validate(p model.UARTParameters) error {
+func (d *UARTDecoder) Validate(cfg model.Config) error {
+	p := cfg.Parameters
 	if p.Channel < 0 {
 		return fmt.Errorf("channel must be non-negative")
 	}

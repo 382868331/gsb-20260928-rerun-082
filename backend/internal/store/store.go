@@ -3,8 +3,11 @@ package store
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,19 +23,72 @@ func newID() string {
 
 type Store struct {
 	mu       sync.RWMutex
+	path     string
 	captures map[string]model.Capture
 	chunks   map[string][]model.Chunk
 	configs  map[string][]model.Config
 	results  map[string]model.Result
 }
 
-func New() *Store {
-	return &Store{
+func New(path ...string) *Store {
+	s := &Store{
 		captures: map[string]model.Capture{},
 		chunks:   map[string][]model.Chunk{},
 		configs:  map[string][]model.Config{},
 		results:  map[string]model.Result{},
 	}
+	if len(path) > 0 {
+		s.path = path[0]
+		s.load()
+	}
+	return s
+}
+
+type snapshot struct {
+	Captures map[string]model.Capture  `json:"captures"`
+	Chunks   map[string][]model.Chunk  `json:"chunks"`
+	Configs  map[string][]model.Config `json:"configs"`
+	Results  map[string]model.Result   `json:"results"`
+}
+
+func (s *Store) load() {
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		return
+	}
+	var snap snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return
+	}
+	if snap.Captures != nil {
+		s.captures = snap.Captures
+	}
+	if snap.Chunks != nil {
+		s.chunks = snap.Chunks
+	}
+	if snap.Configs != nil {
+		s.configs = snap.Configs
+	}
+	if snap.Results != nil {
+		s.results = snap.Results
+	}
+}
+
+// persist 必须在持有写锁时调用。
+func (s *Store) persist() {
+	if s.path == "" {
+		return
+	}
+	snap := snapshot{Captures: s.captures, Chunks: s.chunks, Configs: s.configs, Results: s.results}
+	data, err := json.Marshal(snap)
+	if err != nil {
+		return
+	}
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, s.path)
 }
 
 func (s *Store) CreateCapture(name string, channels []string) model.Capture {
@@ -42,6 +98,7 @@ func (s *Store) CreateCapture(name string, channels []string) model.Capture {
 	s.captures[capture.ID] = capture
 	s.chunks[capture.ID] = []model.Chunk{}
 	s.configs[capture.ID] = []model.Config{}
+	s.persist()
 	return capture
 }
 
@@ -65,6 +122,7 @@ func (s *Store) AddChunks(in []model.Chunk) ([]model.Chunk, error) {
 		})
 		out = append(out, chunk)
 	}
+	s.persist()
 	return out, nil
 }
 
@@ -92,7 +150,7 @@ func (s *Store) CreateConfig(cfg model.Config) (model.Config, error) {
 	if _, ok := s.captures[cfg.CaptureID]; !ok {
 		return model.Config{}, fmt.Errorf("unknown capture %q", cfg.CaptureID)
 	}
-	if cfg.Protocol != "uart" {
+	if cfg.Protocol != "uart" && cfg.Protocol != "spi" {
 		return model.Config{}, fmt.Errorf("supported protocols are: %v", decode.SupportedProtocols())
 	}
 	cfg.Version = len(s.configs[cfg.CaptureID]) + 1
@@ -100,10 +158,11 @@ func (s *Store) CreateConfig(cfg model.Config) (model.Config, error) {
 		cfg.ID = newID()
 	}
 	if cfg.Name == "" {
-		cfg.Name = fmt.Sprintf("UART 配置 v%d", cfg.Version)
+		cfg.Name = fmt.Sprintf("%s 配置 v%d", strings.ToUpper(cfg.Protocol), cfg.Version)
 	}
 	cfg.CreatedAt = time.Now().UTC()
 	s.configs[cfg.CaptureID] = append(s.configs[cfg.CaptureID], cfg)
+	s.persist()
 	return cfg, nil
 }
 
@@ -151,6 +210,7 @@ func (s *Store) Recalculate(configID string) (model.Result, error) {
 	}
 	result.ID = fmt.Sprintf("%s:v%d-result", cfg.ID, cfg.Version)
 	s.results[result.ID] = result
+	s.persist()
 	return result, nil
 }
 

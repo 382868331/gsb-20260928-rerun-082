@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"logicstation/internal/decode"
 	"logicstation/internal/model"
 	"logicstation/internal/store"
 )
@@ -23,7 +24,7 @@ func NewServer(st *store.Store, staticDir string) http.Handler {
 
 func (s *Server) routes(staticDir string) {
 	s.mux.HandleFunc("GET /api/protocols", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, []string{"uart"})
+		writeJSON(w, decode.SupportedProtocols())
 	})
 	s.mux.HandleFunc("GET /api/captures", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, s.store.ListCaptures())
@@ -102,7 +103,9 @@ func (s *Server) createConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg.CaptureID = r.PathValue("id")
-	cfg.Protocol = "uart"
+	if cfg.Protocol == "" {
+		cfg.Protocol = "uart"
+	}
 	saved, err := s.store.CreateConfig(cfg)
 	if err != nil {
 		httpError(w, err)
