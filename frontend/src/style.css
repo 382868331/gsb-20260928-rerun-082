@@ -92,5 +92,15 @@ text { fill: #9fb0c4; font-size: 12px; }
 .marker-row small { grid-column: 2; color: #7f90a5; }
 .capture-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
 .capture-tabs button.selected { border-color: #67d2a5; background: #173228; }
+.diff-picker { display: grid; gap: 8px; margin-bottom: 10px; }
+.diff-message { color: #9fb2c8; }
+.diff-result {
+  border: 1px solid #3a4a5f;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #d7e1ee;
+}
+.diff-result strong { color: #67d2a5; }
+.diff-result p { margin: 6px 0 0; color: #9fb2c8; }
 .loading { padding: 50px; }
 @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } }

@@ -78,3 +78,14 @@ export interface DemoCapture {
   configs: Config[];
   results: Result[];
 }
+
+export interface ResultDiff {
+  index: number;
+  startNs: number;
+  endNs: number;
+  channel: number;
+  a?: Marker;
+  b?: Marker;
+  cause: 'bit-order' | 'clock-edge' | 'incomplete-fragment' | 'other';
+  explanation: string;
+}

@@ -83,3 +83,17 @@ type Result struct {
 	ErrorCount    int       `json:"errorCount"`
 	Markers       []Marker  `json:"markers"`
 }
+
+// ResultDiff 描述两个结果版本之间的首个差异及其定位信息。
+// Cause 取值：bit-order（位序）、clock-edge（采样边沿）、
+// incomplete-fragment（片段不完整）、other。
+type ResultDiff struct {
+	Index       int     `json:"index"`
+	StartNs     int64   `json:"startNs"`
+	EndNs       int64   `json:"endNs"`
+	Channel     int     `json:"channel"`
+	A           *Marker `json:"a,omitempty"`
+	B           *Marker `json:"b,omitempty"`
+	Cause       string  `json:"cause"`
+	Explanation string  `json:"explanation"`
+}

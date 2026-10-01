@@ -1,4 +1,4 @@
-import type { Capture, Chunk, Config, DemoCapture, Result, SPIParameters, UARTParameters } from '../types';
+import type { Capture, Chunk, Config, DemoCapture, Result, ResultDiff, SPIParameters, UARTParameters } from '../types';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -20,4 +20,6 @@ export const api = {
     }),
   configs: (captureId: string) => request<Config[]>(`/api/captures/${captureId}/configs`),
   results: (captureId: string) => request<Result[]>(`/api/captures/${captureId}/results`),
+  diff: (a: string, b: string) =>
+    request<{ diff: ResultDiff | null; message?: string }>(`/api/results/diff?a=${a}&b=${b}`),
 };

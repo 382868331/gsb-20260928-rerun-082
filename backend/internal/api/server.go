@@ -50,9 +50,36 @@ func (s *Server) routes(staticDir string) {
 		}
 		writeJSON(w, result)
 	})
+	s.mux.HandleFunc("GET /api/results/diff", s.diffResults)
 	if staticDir != "" {
 		s.mux.Handle("/", http.FileServer(http.Dir(staticDir)))
 	}
+}
+
+func (s *Server) diffResults(w http.ResponseWriter, r *http.Request) {
+	aID, bID := r.URL.Query().Get("a"), r.URL.Query().Get("b")
+	if aID == "" || bID == "" {
+		writeError(w, http.StatusBadRequest, "需要 a 和 b 两个结果版本 ID")
+		return
+	}
+	resultA, ok := s.store.GetResult(aID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "result a not found")
+		return
+	}
+	resultB, ok := s.store.GetResult(bID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "result b not found")
+		return
+	}
+	cfgA, _ := s.store.GetConfig(resultA.ConfigID)
+	cfgB, _ := s.store.GetConfig(resultB.ConfigID)
+	diff := decode.DiffResults(resultA, resultB, cfgA, cfgB)
+	if diff == nil {
+		writeJSON(w, map[string]any{"diff": nil, "message": "两个结果版本的字节序列完全一致"})
+		return
+	}
+	writeJSON(w, map[string]any{"diff": diff})
 }
 
 func (s *Server) createCapture(w http.ResponseWriter, r *http.Request) {

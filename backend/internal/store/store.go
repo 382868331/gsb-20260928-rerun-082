@@ -175,3 +175,10 @@ func (s *Store) ListResults(captureID string) []model.Result {
 	sort.Slice(out, func(i, j int) bool { return out[i].ConfigVersion < out[j].ConfigVersion })
 	return out
 }
+
+func (s *Store) GetResult(id string) (model.Result, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result, ok := s.results[id]
+	return result, ok
+}
