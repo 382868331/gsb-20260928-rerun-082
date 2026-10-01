@@ -6,6 +6,7 @@ interface Props {
   channelNames: string[];
   markers: Marker[];
   focus?: { marker: Marker; seq: number };
+  resetEpoch?: number;
 }
 
 interface Viewport {
@@ -22,7 +23,7 @@ function formatNs(ns: number): string {
   return `${ns.toFixed(0)} ns`;
 }
 
-export function WaveformTrack({ chunks, channelNames, markers, focus }: Props) {
+export function WaveformTrack({ chunks, channelNames, markers, focus, resetEpoch }: Props) {
   const ordered = useMemo(() => [...chunks].sort((a, b) => a.index - b.index), [chunks]);
   const span = useMemo(() => {
     if (ordered.length === 0) return { start: 0, end: 1, interval: 1 };
@@ -46,6 +47,13 @@ export function WaveformTrack({ chunks, channelNames, markers, focus }: Props) {
     // 仅在用户点击定位时触发
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus?.seq]);
+
+  // 切换采样后回到该采样自身的全览视口；缩放/平移状态绝不跨采样携带，也不触碰已保存结果。
+  useEffect(() => {
+    setViewport({ startNs: 0, nsPerPixel: Math.max(1, span.end / WIDTH) });
+    // span 由当前采样决定；仅在显式切换/重开时重置，避免缩放后 span 引用变化抖动。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resetEpoch]);
 
   const timeToX = (time: number) => (time - viewport.startNs) / viewport.nsPerPixel;
   const xToTime = (x: number) => viewport.startNs + x * viewport.nsPerPixel;

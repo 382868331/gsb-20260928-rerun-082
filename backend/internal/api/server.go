@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"logicstation/internal/compare"
 	"logicstation/internal/decode"
 	"logicstation/internal/model"
 	"logicstation/internal/store"
@@ -50,9 +51,46 @@ func (s *Server) routes(staticDir string) {
 		}
 		writeJSON(w, result)
 	})
+	s.mux.HandleFunc("POST /api/results/diff", s.diffResults)
 	if staticDir != "" {
 		s.mux.Handle("/", http.FileServer(http.Dir(staticDir)))
 	}
+}
+
+func (s *Server) diffResults(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		BaseResultID  string `json:"baseResultId"`
+		OtherResultID string `json:"otherResultId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	base, ok := s.store.GetResult(in.BaseResultID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "unknown base result")
+		return
+	}
+	other, ok := s.store.GetResult(in.OtherResultID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "unknown other result")
+		return
+	}
+	if base.CaptureID != other.CaptureID {
+		writeError(w, http.StatusBadRequest, "只能对照同一采样的两个解码版本")
+		return
+	}
+	baseCfg, ok := s.store.GetConfig(base.ConfigID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "unknown base config")
+		return
+	}
+	otherCfg, ok := s.store.GetConfig(other.ConfigID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "unknown other config")
+		return
+	}
+	writeJSON(w, compare.Results(base, other, baseCfg, otherCfg))
 }
 
 func (s *Server) createCapture(w http.ResponseWriter, r *http.Request) {

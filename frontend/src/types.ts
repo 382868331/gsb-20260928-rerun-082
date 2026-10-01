@@ -78,3 +78,24 @@ export interface DemoCapture {
   configs: Config[];
   results: Result[];
 }
+
+export interface MarkerDiff {
+  index: number;
+  startNs: number;
+  endNs: number;
+  channel: number;
+  base?: Marker;
+  other?: Marker;
+  cause: 'bit-order' | 'clock-edge' | 'incomplete-frame' | 'other-decode-difference';
+  causeText: string;
+  detail: string;
+}
+
+export interface DiffReport {
+  baseResultId: string;
+  otherResultId: string;
+  identical: boolean;
+  diffCount: number;
+  firstDiff?: MarkerDiff;
+  diffs: MarkerDiff[];
+}

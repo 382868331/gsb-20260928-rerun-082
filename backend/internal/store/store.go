@@ -88,6 +88,19 @@ func (s *Store) ListCaptures() []model.Capture {
 	return out
 }
 
+// FindCaptureByName 按名称返回既有采样，保证重复载入示例时复用同一份采样身份，
+// 而不是再建一个同名新示例（用户保存的配置/结果对照因此可以重开）。
+func (s *Store) FindCaptureByName(name string) (model.Capture, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, capture := range s.captures {
+		if capture.Name == name {
+			return capture, true
+		}
+	}
+	return model.Capture{}, false
+}
+
 func (s *Store) GetCapture(id string) (model.Capture, []model.Chunk, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -174,4 +187,11 @@ func (s *Store) ListResults(captureID string) []model.Result {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ConfigVersion < out[j].ConfigVersion })
 	return out
+}
+
+func (s *Store) GetResult(id string) (model.Result, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result, ok := s.results[id]
+	return result, ok
 }

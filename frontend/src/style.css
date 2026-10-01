@@ -93,4 +93,12 @@ text { fill: #9fb0c4; font-size: 12px; }
 .capture-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
 .capture-tabs button.selected { border-color: #67d2a5; background: #173228; }
 .loading { padding: 50px; }
+.diff-panel label { display: grid; gap: 4px; margin-bottom: 8px; }
+.diff-report { margin-top: 10px; }
+.locate-diff { width: 100%; border-color: #ffb454; background: #2e2310; margin: 8px 0; }
+.diff-report ul { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 8px; }
+.diff-report li button { display: grid; gap: 3px; width: 100%; text-align: left; background: #0d1722; border: 1px solid #24364c; border-left: 3px solid #ffb454; border-radius: 6px; padding: 8px 10px; cursor: pointer; color: inherit; }
+.diff-report li button:hover { border-color: #67d2a5; }
+.diff-report small { color: #7f90a5; }
+.error-text { color: #ff635b; }
 @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } }

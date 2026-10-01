@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"sort"
 
 	"logicstation/internal/model"
@@ -13,7 +14,33 @@ type change struct {
 }
 
 func CreateDemo(st *store.Store) map[string]any {
-	return map[string]any{"captures": []any{createUARTDemo(st), createSPIDemo(st)}}
+	captures := make([]map[string]any, 0, 2)
+	for _, name := range []string{"内置 UART 核对波形", "内置 SPI 核对波形"} {
+		if capture, ok := st.FindCaptureByName(name); ok {
+			// 示例已存在：按原采样身份重开用户保存过的配置与结果，
+			// 绝不重复创建同名采样，刷新页面后仍是同一份对照。
+			_, chunks, _ := st.GetCapture(capture.ID)
+			configs := st.ListConfigs(capture.ID)
+			results := make([]model.Result, 0, len(configs))
+			for _, cfg := range configs {
+				result, ok := st.GetResult(fmt.Sprintf("%s:v%d-result", cfg.ID, cfg.Version))
+				if !ok {
+					result, _ = st.Recalculate(cfg.ID)
+				}
+				results = append(results, result)
+			}
+			captures = append(captures, map[string]any{
+				"capture": capture, "chunks": chunks, "configs": configs, "results": results,
+			})
+			continue
+		}
+		if name == "内置 UART 核对波形" {
+			captures = append(captures, createUARTDemo(st))
+		} else {
+			captures = append(captures, createSPIDemo(st))
+		}
+	}
+	return map[string]any{"captures": captures}
 }
 
 func createUARTDemo(st *store.Store) map[string]any {
