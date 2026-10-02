@@ -17,21 +17,7 @@ func CreateDemo(st *store.Store) map[string]any {
 	captures := make([]map[string]any, 0, 2)
 	for _, name := range []string{"内置 UART 核对波形", "内置 SPI 核对波形"} {
 		if capture, ok := st.FindCaptureByName(name); ok {
-			// 示例已存在：按原采样身份重开用户保存过的配置与结果，
-			// 绝不重复创建同名采样，刷新页面后仍是同一份对照。
-			_, chunks, _ := st.GetCapture(capture.ID)
-			configs := st.ListConfigs(capture.ID)
-			results := make([]model.Result, 0, len(configs))
-			for _, cfg := range configs {
-				result, ok := st.GetResult(fmt.Sprintf("%s:v%d-result", cfg.ID, cfg.Version))
-				if !ok {
-					result, _ = st.Recalculate(cfg.ID)
-				}
-				results = append(results, result)
-			}
-			captures = append(captures, map[string]any{
-				"capture": capture, "chunks": chunks, "configs": configs, "results": results,
-			})
+			captures = append(captures, reopenCapture(st, capture))
 			continue
 		}
 		if name == "内置 UART 核对波形" {
@@ -40,7 +26,153 @@ func CreateDemo(st *store.Store) map[string]any {
 			captures = append(captures, createSPIDemo(st))
 		}
 	}
+	// 跨采样对齐核对对：重复字节（重复脉冲）、局部缺段、漂移变化。
+	// 重开时按原采样身份复用，已保存的对齐锚点版本与被排除候选保持可追溯。
+	if capture, ok := st.FindCaptureByName(alignDemoNameA); ok {
+		captures = append(captures, reopenCapture(st, capture))
+		if other, ok := st.FindCaptureByName(alignDemoNameB); ok {
+			captures = append(captures, reopenCapture(st, other))
+		}
+	} else {
+		captures = append(captures, createAlignDemo(st)...)
+	}
 	return map[string]any{"captures": captures}
+}
+
+// reopenCapture 按原采样身份重开用户保存过的配置与结果，
+// 绝不重复创建同名采样，刷新页面后仍是同一份对照。
+func reopenCapture(st *store.Store, capture model.Capture) map[string]any {
+	_, chunks, _ := st.GetCapture(capture.ID)
+	configs := st.ListConfigs(capture.ID)
+	results := make([]model.Result, 0, len(configs))
+	for _, cfg := range configs {
+		result, ok := st.GetResult(fmt.Sprintf("%s:v%d-result", cfg.ID, cfg.Version))
+		if !ok {
+			result, _ = st.Recalculate(cfg.ID)
+		}
+		results = append(results, result)
+	}
+	return map[string]any{
+		"capture": capture, "chunks": chunks, "configs": configs, "results": results,
+	}
+}
+
+const (
+	alignDemoNameA = "内置 跨采样对齐 A（基准）"
+	alignDemoNameB = "内置 跨采样对齐 B（漂移缺段）"
+)
+
+// createAlignDemo 生成两份记录同一 UART 通信的人工采样：
+// A 为基准；B 起点偏移、采样率不同，中段漂移率改变，
+// 局部缺失一段采样（采样缺段），且末字节真实信号不同（'O' vs 'P'）。
+// 序列中重复的字节 'L','L' 使自动候选无法唯一对应，会被排除并记录原因。
+func createAlignDemo(st *store.Store) []map[string]any {
+	const baud = 9600
+	bit := int64(1000000000 / baud)
+	bytesA := []byte{'H', 'E', 'L', 'L', 'O', '0', '0'}
+	bytesB := []byte{'H', 'E', 'L', 'L', 'P', '0', '0'}
+
+	changes := func(bytes []byte) []change {
+		out := []change{}
+		for i, value := range bytes {
+			start := int64(i)*12*bit + 2*bit
+			out = append(out, change{start, 0})
+			for b := 0; b < 8; b++ {
+				out = append(out, change{start + bit*int64(b+1), (value >> b) & 1})
+			}
+			out = append(out, change{start + bit*9, 1})
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].at < out[j].at })
+		return out
+	}
+	levelAt := func(changes []change, t int64) uint8 {
+		level := uint8(1)
+		for _, c := range changes {
+			if c.at <= t {
+				level = c.level
+			}
+		}
+		return level
+	}
+	totalIdeal := int64(len(bytesA))*12*bit + 4*bit
+
+	// A：均匀采样，单块。
+	captureA := st.CreateCapture(alignDemoNameA, []string{"RX"})
+	intervalA := bit / 4
+	countA := int(totalIdeal/intervalA) + 4
+	levelsA := make([][]uint8, countA)
+	ca := changes(bytesA)
+	for i := 0; i < countA; i++ {
+		levelsA[i] = []uint8{levelAt(ca, int64(i)*intervalA)}
+	}
+	chunksA, _ := st.AddChunks([]model.Chunk{
+		{CaptureID: captureA.ID, Index: 0, StartTime: 0, IntervalNs: intervalA, Levels: levelsA},
+	})
+
+	// B：起点偏移 + 分段漂移 + 局部缺段。
+	captureB := st.CreateCapture(alignDemoNameB, []string{"RX"})
+	const offset = int64(3_700_000)
+	tMid := int64(3) * 12 * bit
+	const d1 = 0.0002
+	const d2 = -0.0002
+	var forward func(int64) int64
+	forward = func(t int64) int64 {
+		if t <= tMid {
+			return offset + int64(float64(t)*(1+d1))
+		}
+		return forward(tMid) + int64(float64(t-tMid)*(1+d2))
+	}
+	backward := func(tb int64) int64 {
+		mid := forward(tMid)
+		if tb <= mid {
+			return int64(float64(tb-offset) / (1 + d1))
+		}
+		return tMid + int64(float64(tb-mid)/(1+d2))
+	}
+	intervalB := bit / 5
+	gapStartIdeal := int64(2)*12*bit + 4*bit
+	gapEndIdeal := int64(2)*12*bit + 10*bit
+	gapStartB, gapEndB := forward(gapStartIdeal), forward(gapEndIdeal)
+	cb := changes(bytesB)
+	countB := int(forward(totalIdeal)/intervalB) + 4
+	var levelsB0, levelsB1 [][]uint8
+	for i := 0; i < countB; i++ {
+		tb := int64(i) * intervalB
+		if tb >= gapStartB && tb < gapEndB {
+			continue // 局部缺失：该段没有采样，不补造电平
+		}
+		row := []uint8{levelAt(cb, backward(tb))}
+		if tb < gapStartB {
+			levelsB0 = append(levelsB0, row)
+		} else {
+			levelsB1 = append(levelsB1, row)
+		}
+	}
+	chunksB, _ := st.AddChunks([]model.Chunk{
+		{CaptureID: captureB.ID, Index: 0, StartTime: 0, IntervalNs: intervalB, Levels: levelsB0},
+		{CaptureID: captureB.ID, Index: 1, StartTime: gapEndB, IntervalNs: intervalB, Levels: levelsB1},
+	})
+
+	entry := func(capture model.Capture, chunks []model.Chunk) map[string]any {
+		cfg, _ := st.CreateConfig(model.Config{
+			CaptureID: capture.ID,
+			Protocol:  "uart",
+			Name:      "9600 8N1 RX",
+			Parameters: model.UARTParameters{
+				Channel: 0, Baud: baud, DataBits: 8, Parity: "none", StopBits: 1, IdleLevel: 1, ClockTolerance: 0.03,
+			},
+		})
+		result, _ := st.Recalculate(cfg.ID)
+		return map[string]any{"capture": capture, "chunks": chunks, "configs": []model.Config{cfg}, "results": []model.Result{result}}
+	}
+
+	// 预置一组对齐依据：首字节与末字节起点两个共同事件。
+	// 中段漂移变化会以锚点残差形式呈现在可信范围中，用户可增加中间锚点收敛。
+	st.CreateAlignment("跨采样对齐（首/末字节起点）", captureA.ID, captureB.ID, []model.AlignmentAnchor{
+		{Label: "字节 'H' 起点", BaseNs: 2 * bit, OtherNs: forward(2 * bit), Source: "manual"},
+		{Label: "末字节起点", BaseNs: 6*12*bit + 2*bit, OtherNs: forward(6*12*bit + 2*bit), Source: "manual"},
+	})
+	return []map[string]any{entry(captureA, chunksA), entry(captureB, chunksB)}
 }
 
 func createUARTDemo(st *store.Store) map[string]any {

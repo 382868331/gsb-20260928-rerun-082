@@ -83,3 +83,26 @@ type Result struct {
 	ErrorCount    int       `json:"errorCount"`
 	Markers       []Marker  `json:"markers"`
 }
+
+// AlignmentAnchor 是用户选定（或自动候选采纳）的跨采样共同事件：
+// 同一通信事件在基准采样与对照采样各自时间轴上的位置。
+type AlignmentAnchor struct {
+	ID      string `json:"id"`
+	Label   string `json:"label,omitempty"`
+	BaseNs  int64  `json:"baseNs"`
+	OtherNs int64  `json:"otherNs"`
+	Source  string `json:"source,omitempty"`
+}
+
+// Alignment 是一组对齐依据的不可变版本。修改对齐依据会生成新版本，
+// 旧版本及其锚点保留，可追溯每次比较使用的对齐点。
+type Alignment struct {
+	ID             string            `json:"id"`
+	GroupID        string            `json:"groupId"`
+	Name           string            `json:"name"`
+	BaseCaptureID  string            `json:"baseCaptureId"`
+	OtherCaptureID string            `json:"otherCaptureId"`
+	Version        int               `json:"version"`
+	Anchors        []AlignmentAnchor `json:"anchors"`
+	CreatedAt      time.Time         `json:"createdAt"`
+}

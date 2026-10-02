@@ -99,3 +99,81 @@ export interface DiffReport {
   firstDiff?: MarkerDiff;
   diffs: MarkerDiff[];
 }
+
+export interface AlignmentAnchor {
+  id: string;
+  label?: string;
+  baseNs: number;
+  otherNs: number;
+  source?: string;
+}
+
+export interface Alignment {
+  id: string;
+  groupId: string;
+  name: string;
+  baseCaptureId: string;
+  otherCaptureId: string;
+  version: number;
+  anchors: AlignmentAnchor[];
+  createdAt: string;
+}
+
+export interface AnchorOffset {
+  anchorId: string;
+  label?: string;
+  baseNs: number;
+  otherNs: number;
+  offsetNs: number;
+  residualNs: number;
+}
+
+export interface AlignmentEstimate {
+  anchorCount: number;
+  offsetNs: number;
+  minOffsetNs: number;
+  maxOffsetNs: number;
+  driftPpm: number;
+  hasDrift: boolean;
+  coverageStartNs: number;
+  coverageEndNs: number;
+  confidenceNs: number;
+  anchors: AnchorOffset[];
+}
+
+export interface AnchorCandidate {
+  value: number;
+  baseMarkerId: string;
+  otherMarkerId: string;
+  baseNs: number;
+  otherNs: number;
+  offsetNs: number;
+  excluded: boolean;
+  reason?: string;
+}
+
+export interface CrossDiff {
+  index: number;
+  base?: Marker;
+  other?: Marker;
+  baseStartNs: number;
+  baseEndNs: number;
+  otherStartNs?: number;
+  otherEndNs?: number;
+  confidenceLowNs?: number;
+  confidenceHighNs?: number;
+  cause: 'signal-difference' | 'sampling-gap' | 'decode-config' | 'unmapped';
+  causeText: string;
+  detail: string;
+}
+
+export interface CrossReport {
+  alignmentId: string;
+  version: number;
+  baseResultId: string;
+  otherResultId: string;
+  estimate: AlignmentEstimate;
+  matched: number;
+  diffCount: number;
+  diffs: CrossDiff[];
+}

@@ -102,3 +102,26 @@ text { fill: #9fb0c4; font-size: 12px; }
 .diff-report small { color: #7f90a5; }
 .error-text { color: #ff635b; }
 @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } }
+.alignment-panel { margin-top: 16px; }
+.align-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-bottom: 10px; }
+.align-row label { display: grid; gap: 4px; }
+.anchor-table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+.anchor-table th, .anchor-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #24364c; }
+.estimate-line { color: #9adcff; }
+.candidates ul, .cross-report ul { list-style: none; padding: 0; display: grid; gap: 6px; }
+.candidates .excluded { color: #ffb454; }
+.cross-report li {
+  display: grid;
+  gap: 3px;
+  background: #0d1722;
+  border: 1px solid #24364c;
+  border-left: 3px solid #ffb454;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.cross-report li.cause-sampling-gap { border-left-color: #ff635b; }
+.cross-report li.cause-signal-difference { border-left-color: #ffb454; }
+.cross-report li.cause-decode-config { border-left-color: #b48cff; }
+.cross-report li.cause-unmapped { border-left-color: #7f90a5; }
+.cross-report small { color: #7f90a5; }
+.locate-buttons { display: flex; gap: 8px; }

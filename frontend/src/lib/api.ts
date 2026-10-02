@@ -1,4 +1,4 @@
-import type { Capture, Chunk, Config, DemoCapture, DiffReport, Result, SPIParameters, UARTParameters } from '../types';
+import type { Alignment, AlignmentAnchor, AlignmentEstimate, AnchorCandidate, Capture, Chunk, Config, CrossReport, DemoCapture, DiffReport, Result, SPIParameters, UARTParameters } from '../types';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -24,5 +24,30 @@ export const api = {
     request<DiffReport>('/api/results/diff', {
       method: 'POST',
       body: JSON.stringify({ baseResultId, otherResultId }),
+    }),
+  alignments: () => request<Alignment[]>('/api/alignments'),
+  createAlignment: (name: string, baseCaptureId: string, otherCaptureId: string, anchors: AlignmentAnchor[]) =>
+    request<Alignment>('/api/alignments', {
+      method: 'POST',
+      body: JSON.stringify({ name, baseCaptureId, otherCaptureId, anchors }),
+    }),
+  alignment: (groupId: string, version?: number) =>
+    request<{ alignment: Alignment; versions: Alignment[]; estimate: AlignmentEstimate }>(
+      `/api/alignments/${groupId}${version ? `?version=${version}` : ''}`,
+    ),
+  addAlignmentVersion: (groupId: string, anchors: AlignmentAnchor[]) =>
+    request<{ alignment: Alignment; estimate: AlignmentEstimate }>(`/api/alignments/${groupId}/versions`, {
+      method: 'POST',
+      body: JSON.stringify({ anchors }),
+    }),
+  alignmentCandidates: (groupId: string, baseResultId: string, otherResultId: string) =>
+    request<{ accepted: AnchorCandidate[]; excluded: AnchorCandidate[] }>(`/api/alignments/${groupId}/candidates`, {
+      method: 'POST',
+      body: JSON.stringify({ baseResultId, otherResultId }),
+    }),
+  compareAlignment: (groupId: string, version: number, baseResultId: string, otherResultId: string) =>
+    request<CrossReport>(`/api/alignments/${groupId}/compare`, {
+      method: 'POST',
+      body: JSON.stringify({ version, baseResultId, otherResultId }),
     }),
 };

@@ -19,19 +19,22 @@ func newID() string {
 }
 
 type Store struct {
-	mu       sync.RWMutex
-	captures map[string]model.Capture
-	chunks   map[string][]model.Chunk
-	configs  map[string][]model.Config
-	results  map[string]model.Result
+	mu             sync.RWMutex
+	captures       map[string]model.Capture
+	chunks         map[string][]model.Chunk
+	configs        map[string][]model.Config
+	results        map[string]model.Result
+	alignments     map[string][]model.Alignment
+	alignmentOrder []string
 }
 
 func New() *Store {
 	return &Store{
-		captures: map[string]model.Capture{},
-		chunks:   map[string][]model.Chunk{},
-		configs:  map[string][]model.Config{},
-		results:  map[string]model.Result{},
+		captures:   map[string]model.Capture{},
+		chunks:     map[string][]model.Chunk{},
+		configs:    map[string][]model.Config{},
+		results:    map[string]model.Result{},
+		alignments: map[string][]model.Alignment{},
 	}
 }
 
@@ -194,4 +197,109 @@ func (s *Store) GetResult(id string) (model.Result, bool) {
 	defer s.mu.RUnlock()
 	result, ok := s.results[id]
 	return result, ok
+}
+
+func ensureAnchorIDs(anchors []model.AlignmentAnchor) []model.AlignmentAnchor {
+	out := append([]model.AlignmentAnchor(nil), anchors...)
+	for i := range out {
+		if out[i].ID == "" {
+			out[i].ID = newID()
+		}
+		if out[i].Source == "" {
+			out[i].Source = "manual"
+		}
+	}
+	return out
+}
+
+// CreateAlignment 新建一组跨采样对齐依据（版本 1）。
+func (s *Store) CreateAlignment(name, baseCaptureID, otherCaptureID string, anchors []model.AlignmentAnchor) (model.Alignment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.captures[baseCaptureID]; !ok {
+		return model.Alignment{}, fmt.Errorf("unknown capture %q", baseCaptureID)
+	}
+	if _, ok := s.captures[otherCaptureID]; !ok {
+		return model.Alignment{}, fmt.Errorf("unknown capture %q", otherCaptureID)
+	}
+	groupID := newID()
+	alignment := model.Alignment{
+		ID:             fmt.Sprintf("%s:v1", groupID),
+		GroupID:        groupID,
+		Name:           name,
+		BaseCaptureID:  baseCaptureID,
+		OtherCaptureID: otherCaptureID,
+		Version:        1,
+		Anchors:        ensureAnchorIDs(anchors),
+		CreatedAt:      time.Now().UTC(),
+	}
+	if alignment.Name == "" {
+		alignment.Name = "对齐组 " + groupID[:6]
+	}
+	s.alignments[groupID] = []model.Alignment{alignment}
+	s.alignmentOrder = append(s.alignmentOrder, groupID)
+	return alignment, nil
+}
+
+// AddAlignmentVersion 修改对齐依据：生成新的不可变版本，旧版本保留，
+// 已保存的解码结果与历史比较不受影响。
+func (s *Store) AddAlignmentVersion(groupID string, anchors []model.AlignmentAnchor) (model.Alignment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	versions, ok := s.alignments[groupID]
+	if !ok {
+		return model.Alignment{}, fmt.Errorf("unknown alignment %q", groupID)
+	}
+	latest := versions[len(versions)-1]
+	next := model.Alignment{
+		GroupID:        groupID,
+		Name:           latest.Name,
+		BaseCaptureID:  latest.BaseCaptureID,
+		OtherCaptureID: latest.OtherCaptureID,
+		Version:        latest.Version + 1,
+		Anchors:        ensureAnchorIDs(anchors),
+		CreatedAt:      time.Now().UTC(),
+	}
+	next.ID = fmt.Sprintf("%s:v%d", groupID, next.Version)
+	s.alignments[groupID] = append(s.alignments[groupID], next)
+	return next, nil
+}
+
+// ListAlignments 返回每组对齐的最新版本。
+func (s *Store) ListAlignments() []model.Alignment {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]model.Alignment, 0, len(s.alignmentOrder))
+	for _, groupID := range s.alignmentOrder {
+		versions := s.alignments[groupID]
+		out = append(out, versions[len(versions)-1])
+	}
+	return out
+}
+
+// AlignmentVersions 返回一组对齐的全部版本（含被替换的旧对齐依据）。
+func (s *Store) AlignmentVersions(groupID string) ([]model.Alignment, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	versions, ok := s.alignments[groupID]
+	return append([]model.Alignment(nil), versions...), ok
+}
+
+// GetAlignmentVersion 按版本号取对齐依据；version<=0 时取最新版本。
+func (s *Store) GetAlignmentVersion(groupID string, version int) (model.Alignment, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	versions, ok := s.alignments[groupID]
+	if !ok {
+		return model.Alignment{}, false
+	}
+	if version <= 0 {
+		return versions[len(versions)-1], true
+	}
+	for _, alignment := range versions {
+		if alignment.Version == version {
+			return alignment, true
+		}
+	}
+	return model.Alignment{}, false
 }

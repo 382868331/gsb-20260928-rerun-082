@@ -4,6 +4,7 @@ import { ConfigForm } from './components/ConfigForm';
 import { ResultList } from './components/ResultList';
 import { WaveformTrack } from './components/WaveformTrack';
 import { DiffPanel } from './components/DiffPanel';
+import { AlignmentPanel } from './components/AlignmentPanel';
 import type { DemoCapture, Marker, SPIParameters, UARTParameters } from './types';
 
 interface FocusTarget {
@@ -53,6 +54,14 @@ export default function App() {
   };
 
   const locate = (marker: Marker) => {
+    setFocus((current) => ({ marker, seq: (current?.seq ?? 0) + 1 }));
+  };
+
+  // 跨采样定位：切换到另一份采样并聚焦映射区间；不重置该采样视口状态之外的内容，
+  // 各采样的配置与结果版本始终按采样身份分开，绝不混用。
+  const locateCross = (captureId: string, resultId: string | undefined, marker: Marker) => {
+    setActiveCaptureId(captureId);
+    if (resultId) setSelectedResultId(resultId);
     setFocus((current) => ({ marker, seq: (current?.seq ?? 0) + 1 }));
   };
 
@@ -121,6 +130,7 @@ export default function App() {
           resetEpoch={captureEpoch}
         />
       </div>
+      <AlignmentPanel demos={demos} onLocateCross={locateCross} />
     </main>
   );
 }
