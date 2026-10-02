@@ -6,7 +6,8 @@
 
 - `backend/internal/model`：采样、配置、标记和结果模型。
 - `backend/internal/decode`：协议注册表；`uart.go` 与 `spi.go` 是启用协议。新增协议时在 `registry.go` 注册。
-- `backend/internal/store`：内存存储，捕获、采样块、配置版本、结果互不覆盖。
+- `backend/internal/store`：JSON 持久化存储，捕获、采样块、配置版本、结果、跨采样对齐互不覆盖。
+- `backend/internal/alignment`：用户共同事件锚点、分段漂移映射、外推可信范围。
 - `backend/internal/api`：HTTP API 与内置核对波形。
 - `frontend/src/components/WaveformTrack.tsx`：轨道、标记、以鼠标时间点为锚点的缩放和平移。
 
@@ -21,21 +22,24 @@
 - 结果列表中点击任一标记可将波形视口定位到该字节/错误的原始采样区间，缩放平移不影响定位。
 - 再次载入内置示例（含刷新页面后）按采样名称复用同一采样身份：重开的是原采样上用户另存过的配置与结果对照，不会生成同名新示例。
 - `POST /api/results/diff` 对照同一采样的两个解码结果，定位首个不同标记的波形区间，并按 `bit-order`（位序）、`clock-edge`（采样边沿）、`incomplete-frame`（片段不完整）说明差异根因；前端可从差异条目直接跳到对应波形区间。
+- `POST /api/alignments` 使用若干用户确认的共同事件创建不可变跨采样对齐；响应包含分段偏移/漂移，保存采纳锚点和被排除的重复脉冲候选。
+- `POST /api/results/cross-diff` 按既有对齐比较不同采样，不修改原采样或已保存解码版本；差异分为 `actual-signal`（实际信号不同）、`sampling-missing`（采样缺段）、`protocol-parameters`（协议参数不同），无法唯一对应的片段保留为 `unmatched`，并给出另一采样上的可信时间区间。
+- 修改对齐依据会创建新的对齐 ID；旧报告引用旧 ID，重开后仍可追溯每个锚点及被排除候选。跨采样面板的结果选择按采样身份隔离，切换采样不会沿用另一份采样的配置。
 
 ## 运行
 
 ```bash
-cd backend && go run ./cmd/server -addr :8080 -static ../frontend/dist
+cd backend && go run ./cmd/server -addr :8080 -static ../frontend/dist -data data/logicstation.json
 ```
 
 开发模式：
 
 ```bash
-cd backend && go run ./cmd/server -addr :8080
+cd backend && go run ./cmd/server -addr :8080 -data data/logicstation.json
 cd frontend && npm install && npm run dev
 ```
 
-打开页面后会自动调用 `POST /api/demo` 生成内置核对波形。UART 波形包含有效字节以及跨块续接后发现的停止位异常；SPI 波形包含已知字节 0x48/0x69（跨块续接）、片选中途结束的不完整报文和片选无效期间的错误时钟边沿，并预置 MSB/LSB/错误边沿三组配置用于对照。
+打开页面后会自动调用 `POST /api/demo` 生成内置核对波形。UART 波形包含有效字节以及跨块续接后发现的停止位异常；SPI 波形包含已知字节 0x48/0x69（跨块续接）、片选中途结束的不完整报文和片选无效期间的错误时钟边沿，并预置 MSB/LSB/错误边沿三组配置用于对照。额外的两份“跨采样人工波形”包含重复 A/B/A/C 脉冲、局部缺失块和分段漂移变化，预置四锚点及被排除的重复 A 候选。
 
 ## 验证
 

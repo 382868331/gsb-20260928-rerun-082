@@ -4,6 +4,7 @@ import { ConfigForm } from './components/ConfigForm';
 import { ResultList } from './components/ResultList';
 import { WaveformTrack } from './components/WaveformTrack';
 import { DiffPanel } from './components/DiffPanel';
+import { CrossAlignmentPanel } from './components/CrossAlignmentPanel';
 import type { DemoCapture, Marker, SPIParameters, UARTParameters } from './types';
 
 interface FocusTarget {
@@ -111,6 +112,17 @@ export default function App() {
             results={active.results}
             selectedResultId={selectedResult?.id}
             onLocate={locate}
+          />
+          <CrossAlignmentPanel
+            demos={demos}
+            onOpen={(captureId, marker) => {
+              const demo = demos.find((item) => item.capture.id === captureId);
+              const result = demo?.results.find((item) => item.markers.some((candidate) => candidate.id === marker.id));
+              setActiveCaptureId(captureId);
+              setSelectedResultId(result?.id ?? demo?.results[0]?.id);
+              setCaptureEpoch((n) => n + 1);
+              setFocus({ marker, seq: (focus?.seq ?? 0) + 1 });
+            }}
           />
         </div>
         <WaveformTrack

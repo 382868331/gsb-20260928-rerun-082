@@ -101,4 +101,18 @@ text { fill: #9fb0c4; font-size: 12px; }
 .diff-report li button:hover { border-color: #67d2a5; }
 .diff-report small { color: #7f90a5; }
 .error-text { color: #ff635b; }
+.hint { color: #7f90a5; font-size: 12px; }
+.cross-panel label { display: grid; gap: 4px; margin-bottom: 8px; }
+.anchor-editor { display: grid; gap: 8px; margin: 10px 0; padding: 10px; background: #0d1722; border-radius: 8px; }
+.anchor-row { display: grid; grid-template-columns: 1fr 22px 1fr; gap: 6px; align-items: center; }
+.cross-report { display: grid; gap: 8px; margin-top: 10px; }
+.cross-report ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.cross-report li { border-left: 3px solid #ffb454; background: #0d1722; border-radius: 6px; padding: 8px 10px; display: grid; gap: 5px; }
+.cross-report .cause-actual-signal { border-color: #ff635b; }
+.cross-report .cause-sampling-missing { border-color: #ffd166; }
+.cross-report .cause-protocol-parameters { border-color: #58c6ff; }
+.cross-report .cause-unmatched { border-color: #8b9bad; }
+.cross-report details { background: #0d1722; border-radius: 6px; padding: 7px 9px; }
+.cross-report .excluded { color: #ffaaa5; }
+.cross-report .accepted { color: #89e0a8; }
 @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -46,8 +47,8 @@ func TestDemoIsIdempotentAndReopensSavedComparisons(t *testing.T) {
 		t.Fatalf("demo must list each capture once: %s", second)
 	}
 	captures := st.ListCaptures()
-	if len(captures) != 2 {
-		t.Fatalf("captures after reload=%d, want 2", len(captures))
+	if len(captures) != 4 {
+		t.Fatalf("captures after reload=%d, want 4", len(captures))
 	}
 	if !strings.Contains(first, captures[0].ID) || !strings.Contains(second, captures[0].ID) {
 		t.Fatalf("reload must keep original capture identity")
@@ -59,6 +60,44 @@ func TestDemoIsIdempotentAndReopensSavedComparisons(t *testing.T) {
 	}
 	if got := len(st.ListResults(spi.ID)); got != 3 {
 		t.Fatalf("spi results after reload=%d, want 3", got)
+	}
+}
+
+func TestCrossCaptureAlignmentPersistsAndClassifiesGap(t *testing.T) {
+	dataPath := filepath.Join(t.TempDir(), "logicstation.json")
+	st, err := store.NewPersistent(dataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(st, "")
+	demoReq := httptest.NewRequest(http.MethodPost, "/api/demo", strings.NewReader("{}"))
+	demoRec := httptest.NewRecorder()
+	handler.ServeHTTP(demoRec, demoReq)
+	if demoRec.Code != http.StatusOK {
+		t.Fatalf("demo status=%d body=%s", demoRec.Code, demoRec.Body.String())
+	}
+	alignments := st.ListAlignments()
+	if len(alignments) != 1 {
+		t.Fatalf("alignments=%d, want 1", len(alignments))
+	}
+	align := alignments[0]
+	if len(align.Anchors) != 4 || len(align.ExcludedCandidates) == 0 {
+		t.Fatalf("alignment does not retain every anchor and excluded duplicate candidate: %+v", align)
+	}
+	body := fmt.Sprintf(`{"alignmentId":%q}`, align.ID)
+	req := httptest.NewRequest(http.MethodPost, "/api/results/cross-diff", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "sampling-missing") {
+		t.Fatalf("cross diff=%d body=%s", rec.Code, rec.Body.String())
+	}
+	reopened, err := store.NewPersistent(dataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, ok := reopened.GetAlignment(align.ID)
+	if !ok || len(loaded.Anchors) != 4 || len(loaded.ExcludedCandidates) != len(align.ExcludedCandidates) {
+		t.Fatalf("reopened alignment lost audit data: %+v ok=%v", loaded, ok)
 	}
 }
 

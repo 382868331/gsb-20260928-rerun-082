@@ -12,8 +12,13 @@ import (
 func main() {
 	addr := flag.String("addr", ":8080", "HTTP listen address")
 	static := flag.String("static", "frontend/dist", "static file directory")
+	data := flag.String("data", "data/logicstation.json", "persistent data file")
 	flag.Parse()
-	handler := api.NewServer(store.New(), *static)
+	st, err := store.NewPersistent(*data)
+	if err != nil {
+		log.Fatal(err)
+	}
+	handler := api.NewServer(st, *static)
 	log.Printf("logic station listening on %s", *addr)
 	log.Fatal(http.ListenAndServe(*addr, handler))
 }

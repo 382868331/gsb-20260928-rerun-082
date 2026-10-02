@@ -3,7 +3,11 @@ package store
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -19,19 +23,91 @@ func newID() string {
 }
 
 type Store struct {
-	mu       sync.RWMutex
-	captures map[string]model.Capture
-	chunks   map[string][]model.Chunk
-	configs  map[string][]model.Config
-	results  map[string]model.Result
+	mu         sync.RWMutex
+	dataPath   string
+	captures   map[string]model.Capture
+	chunks     map[string][]model.Chunk
+	configs    map[string][]model.Config
+	results    map[string]model.Result
+	alignments map[string]model.Alignment
 }
 
 func New() *Store {
 	return &Store{
-		captures: map[string]model.Capture{},
-		chunks:   map[string][]model.Chunk{},
-		configs:  map[string][]model.Config{},
-		results:  map[string]model.Result{},
+		captures:   map[string]model.Capture{},
+		chunks:     map[string][]model.Chunk{},
+		configs:    map[string][]model.Config{},
+		results:    map[string]model.Result{},
+		alignments: map[string]model.Alignment{},
+	}
+}
+
+type snapshot struct {
+	Captures   []model.Capture           `json:"captures"`
+	Chunks     map[string][]model.Chunk  `json:"chunks"`
+	Configs    map[string][]model.Config `json:"configs"`
+	Results    []model.Result            `json:"results"`
+	Alignments []model.Alignment         `json:"alignments"`
+}
+
+func NewPersistent(path string) (*Store, error) {
+	s := New()
+	s.dataPath = path
+	payload, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return s, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var data snapshot
+	if err := json.Unmarshal(payload, &data); err != nil {
+		return nil, fmt.Errorf("load alignment data: %w", err)
+	}
+	for _, c := range data.Captures {
+		s.captures[c.ID] = c
+	}
+	if data.Chunks != nil {
+		s.chunks = data.Chunks
+	}
+	if data.Configs != nil {
+		s.configs = data.Configs
+	}
+	for _, c := range data.Captures {
+		if _, ok := s.chunks[c.ID]; !ok {
+			s.chunks[c.ID] = []model.Chunk{}
+		}
+		if _, ok := s.configs[c.ID]; !ok {
+			s.configs[c.ID] = []model.Config{}
+		}
+	}
+	for _, r := range data.Results {
+		s.results[r.ID] = r
+	}
+	for _, a := range data.Alignments {
+		s.alignments[a.ID] = a
+	}
+	return s, nil
+}
+
+func (s *Store) saveLocked() {
+	if s.dataPath == "" {
+		return
+	}
+	data := snapshot{Chunks: s.chunks, Configs: s.configs}
+	for _, c := range s.captures {
+		data.Captures = append(data.Captures, c)
+	}
+	for _, r := range s.results {
+		data.Results = append(data.Results, r)
+	}
+	for _, a := range s.alignments {
+		data.Alignments = append(data.Alignments, a)
+	}
+	sort.Slice(data.Captures, func(i, j int) bool { return data.Captures[i].CreatedAt.Before(data.Captures[j].CreatedAt) })
+	payload, _ := json.MarshalIndent(data, "", "  ")
+	if err := os.MkdirAll(filepath.Dir(s.dataPath), 0o755); err == nil {
+		_ = os.WriteFile(s.dataPath, payload, 0o600)
 	}
 }
 
@@ -51,6 +127,7 @@ func (s *Store) CreateCapture(name string, channels []string) model.Capture {
 	s.captures[capture.ID] = capture
 	s.chunks[capture.ID] = []model.Chunk{}
 	s.configs[capture.ID] = []model.Config{}
+	s.saveLocked()
 	return capture
 }
 
@@ -74,6 +151,7 @@ func (s *Store) AddChunks(in []model.Chunk) ([]model.Chunk, error) {
 		})
 		out = append(out, chunk)
 	}
+	s.saveLocked()
 	return out, nil
 }
 
@@ -126,6 +204,7 @@ func (s *Store) CreateConfig(cfg model.Config) (model.Config, error) {
 	}
 	cfg.CreatedAt = time.Now().UTC()
 	s.configs[cfg.CaptureID] = append(s.configs[cfg.CaptureID], cfg)
+	s.saveLocked()
 	return cfg, nil
 }
 
@@ -173,6 +252,7 @@ func (s *Store) Recalculate(configID string) (model.Result, error) {
 	}
 	result.ID = fmt.Sprintf("%s:v%d-result", cfg.ID, cfg.Version)
 	s.results[result.ID] = result
+	s.saveLocked()
 	return result, nil
 }
 
@@ -194,4 +274,50 @@ func (s *Store) GetResult(id string) (model.Result, bool) {
 	defer s.mu.RUnlock()
 	result, ok := s.results[id]
 	return result, ok
+}
+
+func (s *Store) SaveAlignment(in model.Alignment) (model.Alignment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if in.ID != "" {
+		if _, exists := s.alignments[in.ID]; exists {
+			return model.Alignment{}, fmt.Errorf("alignment %q already exists; changing anchors creates a new comparison", in.ID)
+		}
+	}
+	if _, ok := s.captures[in.BaseCaptureID]; !ok {
+		return model.Alignment{}, fmt.Errorf("unknown base capture %q", in.BaseCaptureID)
+	}
+	if _, ok := s.captures[in.OtherCaptureID]; !ok {
+		return model.Alignment{}, fmt.Errorf("unknown other capture %q", in.OtherCaptureID)
+	}
+	if in.BaseCaptureID == in.OtherCaptureID {
+		return model.Alignment{}, fmt.Errorf("cross-capture alignment requires different captures")
+	}
+	if in.ID == "" {
+		in.ID = newID()
+	}
+	if in.CreatedAt.IsZero() {
+		in.CreatedAt = time.Now().UTC()
+	}
+	s.alignments[in.ID] = in
+	s.saveLocked()
+	return in, nil
+}
+
+func (s *Store) GetAlignment(id string) (model.Alignment, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	a, ok := s.alignments[id]
+	return a, ok
+}
+
+func (s *Store) ListAlignments() []model.Alignment {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]model.Alignment, 0, len(s.alignments))
+	for _, a := range s.alignments {
+		out = append(out, a)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out
 }

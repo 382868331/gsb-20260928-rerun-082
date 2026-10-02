@@ -1,4 +1,4 @@
-import type { Capture, Chunk, Config, DemoCapture, DiffReport, Result, SPIParameters, UARTParameters } from '../types';
+import type { Alignment, Capture, Chunk, Config, CrossDiffReport, DemoCapture, DiffReport, Result, SPIParameters, UARTParameters } from '../types';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -24,5 +24,15 @@ export const api = {
     request<DiffReport>('/api/results/diff', {
       method: 'POST',
       body: JSON.stringify({ baseResultId, otherResultId }),
+    }),
+  createAlignment: (baseResultId: string, otherResultId: string, anchors: Array<{ baseMarkerId: string; otherMarkerId: string; uncertaintyNs?: number }>) =>
+    request<{ alignment: Alignment; segments: unknown[]; status: string }>('/api/alignments', {
+      method: 'POST',
+      body: JSON.stringify({ name: `跨采样对齐 ${new Date().toLocaleString()}`, baseResultId, otherResultId, anchors }),
+    }),
+  crossDiff: (alignmentId: string) =>
+    request<CrossDiffReport>('/api/results/cross-diff', {
+      method: 'POST',
+      body: JSON.stringify({ alignmentId }),
     }),
 };

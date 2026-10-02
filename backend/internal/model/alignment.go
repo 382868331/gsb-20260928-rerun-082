@@ -1,0 +1,43 @@
+package model
+
+import "time"
+
+// AlignmentAnchor 是用户确认的一组跨采样共同事件。
+type AlignmentAnchor struct {
+	ID            string `json:"id"`
+	BaseMarkerID  string `json:"baseMarkerId"`
+	OtherMarkerID string `json:"otherMarkerId"`
+	BaseTimeNs    int64  `json:"baseTimeNs"`
+	OtherTimeNs   int64  `json:"otherTimeNs"`
+	UncertaintyNs int64  `json:"uncertaintyNs"`
+}
+
+// AlignmentCandidate 保存曾经参与匹配但未被采纳的候选，保证重开后可审计。
+type AlignmentCandidate struct {
+	ID             string `json:"id"`
+	BaseMarkerID   string `json:"baseMarkerId"`
+	OtherMarkerID  string `json:"otherMarkerId"`
+	BaseTimeNs     int64  `json:"baseTimeNs"`
+	OtherTimeNs    int64  `json:"otherTimeNs"`
+	Score          int    `json:"score"`
+	Status         string `json:"status"`
+	Reason         string `json:"reason"`
+	AnchorID       string `json:"anchorId,omitempty"`
+	PredictedNs    int64  `json:"predictedNs,omitempty"`
+	ResidualNs     int64  `json:"residualNs,omitempty"`
+	ConfidenceHalf int64  `json:"confidenceHalfWidthNs,omitempty"`
+}
+
+// Alignment 是一次性比较所依据的不可变对齐版本；修改依据会创建新会话。
+type Alignment struct {
+	ID                 string               `json:"id"`
+	Name               string               `json:"name"`
+	BaseCaptureID      string               `json:"baseCaptureId"`
+	OtherCaptureID     string               `json:"otherCaptureId"`
+	BaseResultID       string               `json:"baseResultId"`
+	OtherResultID      string               `json:"otherResultId"`
+	Anchors            []AlignmentAnchor    `json:"anchors"`
+	ExcludedCandidates []AlignmentCandidate `json:"excludedCandidates"`
+	Status             string               `json:"status"`
+	CreatedAt          time.Time            `json:"createdAt"`
+}
