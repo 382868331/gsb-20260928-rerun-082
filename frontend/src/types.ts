@@ -11,6 +11,8 @@ export interface Chunk {
   id: string;
   captureId: string;
   index: number;
+  segmentId?: string;
+  clockReset?: boolean;
   startTimeNs: number;
   intervalNs: number;
   levels: LevelRow[];
@@ -51,6 +53,8 @@ export interface Marker {
   id: string;
   kind: 'byte' | 'error';
   code?: string;
+  segmentId?: string;
+  chunkId?: string;
   startNs: number;
   endNs: number;
   channel: number;
@@ -104,9 +108,14 @@ export interface AlignmentAnchor {
   id: string;
   baseMarkerId: string;
   otherMarkerId: string;
+  sequence?: number;
+  baseSegmentId?: string;
+  otherSegmentId?: string;
   baseTimeNs: number;
   otherTimeNs: number;
   uncertaintyNs: number;
+  manualOrderConfirmed?: boolean;
+  evidence?: string;
 }
 
 export interface AlignmentCandidate {
@@ -138,6 +147,9 @@ export interface Alignment {
 }
 
 export interface AlignmentSegment {
+  id?: string;
+  baseSegmentId?: string;
+  otherSegmentId?: string;
   startOtherNs: number;
   endOtherNs: number;
   offsetNs: number;
@@ -147,12 +159,18 @@ export interface AlignmentSegment {
 export interface CrossMarkerDiff {
   base?: Marker;
   other?: Marker;
+  baseSegmentId?: string;
+  otherSegmentId?: string;
+  baseChunkId?: string;
+  otherChunkId?: string;
+  alignmentId?: string;
+  anchorIds?: string[];
   mappedStartNs?: number;
   mappedEndNs?: number;
   otherNativeStartNs?: number;
   otherNativeEndNs?: number;
   confidenceHalfWidthNs: number;
-  cause: 'actual-signal' | 'sampling-missing' | 'protocol-parameters' | 'unmatched' | string;
+  cause: 'actual-signal' | 'sampling-missing' | 'clock-drift' | 'protocol-parameters' | 'unmatched' | string;
   causeText: string;
   detail: string;
 }

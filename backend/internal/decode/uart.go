@@ -84,11 +84,18 @@ func (d *UARTDecoder) Decode(captureName string, chunks []model.Chunk, cfg model
 	var haveLast bool
 	var lastTime int64
 	var lastLevel uint8
+	var currentChunk model.Chunk
 	markerSeq := 0
 	addMarker := func(m model.Marker) {
 		markerSeq++
 		if m.ID == "" {
 			m.ID = fmt.Sprintf("%s-m%d", cfg.ID, markerSeq)
+		}
+		if m.SegmentID == "" {
+			m.SegmentID = currentChunk.SegmentID
+		}
+		if m.ChunkID == "" {
+			m.ChunkID = currentChunk.ID
 		}
 		result.Markers = append(result.Markers, m)
 	}
@@ -108,9 +115,10 @@ func (d *UARTDecoder) Decode(captureName string, chunks []model.Chunk, cfg model
 		if len(chunk.Levels) == 0 {
 			continue
 		}
+		currentChunk = chunk
 		if haveLast {
 			expectedNext := lastTime + chunk.IntervalNs
-			if chunk.StartTime != expectedNext {
+			if !chunk.ClockReset && chunk.StartTime != expectedNext {
 				start := lastTime
 				end := chunk.StartTime
 				label := "采样间隙：缺失采样，不补全字节"
@@ -121,6 +129,11 @@ func (d *UARTDecoder) Decode(captureName string, chunks []model.Chunk, cfg model
 				}
 				addMarker(model.Marker{Kind: "error", Code: "sampling-gap", Severity: "error", Channel: p.Channel, StartNs: start, EndNs: end, Label: label})
 				haveLast = false
+			}
+			if chunk.ClockReset {
+				addMarker(model.Marker{Kind: "error", Code: "clock-reset", Severity: "info", Channel: p.Channel, StartNs: chunk.StartTime, EndNs: chunk.StartTime, Label: "采样时钟重置：后续时间戳进入新的采集段，不与重置前同名时间拼接"})
+				haveLast = false
+				frame = nil
 			}
 		}
 

@@ -64,9 +64,13 @@ func (s *Server) routes(staticDir string) {
 }
 
 type anchorRequest struct {
-	BaseMarkerID  string `json:"baseMarkerId"`
-	OtherMarkerID string `json:"otherMarkerId"`
-	UncertaintyNs int64  `json:"uncertaintyNs"`
+	BaseMarkerID         string `json:"baseMarkerId"`
+	OtherMarkerID        string `json:"otherMarkerId"`
+	BaseSegmentID        string `json:"baseSegmentId"`
+	OtherSegmentID       string `json:"otherSegmentId"`
+	UncertaintyNs        int64  `json:"uncertaintyNs"`
+	ManualOrderConfirmed bool   `json:"manualOrderConfirmed"`
+	Evidence             string `json:"evidence"`
 }
 
 func (s *Server) createAlignment(w http.ResponseWriter, r *http.Request) {
@@ -102,7 +106,15 @@ func (s *Server) createAlignment(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("anchor %d marker not found", i+1))
 			return
 		}
-		anchors = append(anchors, model.AlignmentAnchor{ID: fmt.Sprintf("anchor-%d", i+1), BaseMarkerID: bm.ID, OtherMarkerID: om.ID, BaseTimeNs: bm.StartNs, OtherTimeNs: om.StartNs, UncertaintyNs: req.UncertaintyNs})
+		baseSegmentID := req.BaseSegmentID
+		if baseSegmentID == "" {
+			baseSegmentID = bm.SegmentID
+		}
+		otherSegmentID := req.OtherSegmentID
+		if otherSegmentID == "" {
+			otherSegmentID = om.SegmentID
+		}
+		anchors = append(anchors, model.AlignmentAnchor{ID: fmt.Sprintf("anchor-%d", i+1), Sequence: i + 1, BaseMarkerID: bm.ID, OtherMarkerID: om.ID, BaseSegmentID: baseSegmentID, OtherSegmentID: otherSegmentID, BaseChunkID: bm.ChunkID, OtherChunkID: om.ChunkID, BaseTimeNs: bm.StartNs, OtherTimeNs: om.StartNs, UncertaintyNs: req.UncertaintyNs, ManualOrderConfirmed: req.ManualOrderConfirmed, Evidence: req.Evidence})
 	}
 	_, baseChunks, _ := s.store.GetCapture(base.CaptureID)
 	_, otherChunks, _ := s.store.GetCapture(other.CaptureID)
@@ -123,13 +135,17 @@ func (s *Server) createAlignment(w http.ResponseWriter, r *http.Request) {
 func buildCandidates(align model.Alignment, mapping alignment.Mapping, baseMarkers, otherMarkers []model.Marker) []model.AlignmentCandidate {
 	out := []model.AlignmentCandidate{}
 	for _, a := range align.Anchors {
-		out = append(out, model.AlignmentCandidate{ID: fmt.Sprintf("%s-accepted", a.ID), AnchorID: a.ID, BaseMarkerID: a.BaseMarkerID, OtherMarkerID: a.OtherMarkerID, BaseTimeNs: a.BaseTimeNs, OtherTimeNs: a.OtherTimeNs, Score: 100, Status: alignment.CandidateAccepted, Reason: "用户确认的共同事件"})
+		out = append(out, model.AlignmentCandidate{ID: fmt.Sprintf("%s-accepted", a.ID), AnchorID: a.ID, BaseMarkerID: a.BaseMarkerID, OtherMarkerID: a.OtherMarkerID, BaseSegmentID: a.BaseSegmentID, OtherSegmentID: a.OtherSegmentID, BaseTimeNs: a.BaseTimeNs, OtherTimeNs: a.OtherTimeNs, Score: 100, Status: alignment.CandidateAccepted, Reason: "用户确认的共同事件"})
 		bm, _ := findMarker(baseMarkers, a.BaseMarkerID)
 		for _, om := range otherMarkers {
 			if om.ID == a.OtherMarkerID || !sameSignature(&bm, &om) {
 				continue
 			}
-			iv, _ := mapping.MapInterval(om.StartNs, om.EndNs, a.UncertaintyNs)
+			if om.SegmentID != a.OtherSegmentID {
+				out = append(out, model.AlignmentCandidate{ID: fmt.Sprintf("%s-excluded-%d", a.ID, len(out)), AnchorID: a.ID, BaseMarkerID: bm.ID, OtherMarkerID: om.ID, BaseSegmentID: bm.SegmentID, OtherSegmentID: om.SegmentID, BaseTimeNs: bm.StartNs, OtherTimeNs: om.StartNs, Score: 0, Status: alignment.CandidateExcluded, Reason: "另一重置轮次的同特征事件：段身份不同，即使本地时间同名也不参与匹配"})
+				continue
+			}
+			iv, _ := mapping.MapInterval(a.OtherSegmentID, om.StartNs, om.EndNs, a.UncertaintyNs)
 			residual := iv.Start - bm.StartNs
 			abs := residual
 			if abs < 0 {
@@ -139,10 +155,62 @@ func buildCandidates(align model.Alignment, mapping alignment.Mapping, baseMarke
 			if score < 0 {
 				score = 0
 			}
-			out = append(out, model.AlignmentCandidate{ID: fmt.Sprintf("%s-excluded-%d", a.ID, len(out)), AnchorID: a.ID, BaseMarkerID: bm.ID, OtherMarkerID: om.ID, BaseTimeNs: bm.StartNs, OtherTimeNs: om.StartNs, PredictedNs: iv.Start, ResidualNs: residual, ConfidenceHalf: iv.Half, Score: score, Status: alignment.CandidateExcluded, Reason: "同特征事件但未落在用户锚点的可信对应范围"})
+			out = append(out, model.AlignmentCandidate{ID: fmt.Sprintf("%s-excluded-%d", a.ID, len(out)), AnchorID: a.ID, BaseMarkerID: bm.ID, OtherMarkerID: om.ID, BaseSegmentID: bm.SegmentID, OtherSegmentID: om.SegmentID, BaseTimeNs: bm.StartNs, OtherTimeNs: om.StartNs, PredictedNs: iv.Start, ResidualNs: residual, ConfidenceHalf: iv.Half, Score: score, Status: alignment.CandidateExcluded, Reason: "同特征重复报文候选；仅在同一采集段及可信范围内竞争"})
 		}
 	}
 	return out
+}
+
+func enrichLegacyAnchors(align *model.Alignment, baseMarkers, otherMarkers []model.Marker, baseChunks, otherChunks []model.Chunk) {
+	model.NormalizeChunkSegments(baseChunks)
+	model.NormalizeChunkSegments(otherChunks)
+	backfillMarkerSegments(baseMarkers, model.CaptureSegments(align.BaseCaptureID, baseChunks))
+	backfillMarkerSegments(otherMarkers, model.CaptureSegments(align.OtherCaptureID, otherChunks))
+	for i := range align.Anchors {
+		a := &align.Anchors[i]
+		if a.Sequence == 0 {
+			a.Sequence = i + 1
+		}
+		if bm, ok := findMarker(baseMarkers, a.BaseMarkerID); ok {
+			if a.BaseSegmentID == "" {
+				a.BaseSegmentID = bm.SegmentID
+			}
+			if a.BaseChunkID == "" {
+				a.BaseChunkID = bm.ChunkID
+			}
+			if a.BaseTimeNs == 0 {
+				a.BaseTimeNs = bm.StartNs
+			}
+		}
+		if om, ok := findMarker(otherMarkers, a.OtherMarkerID); ok {
+			if a.OtherSegmentID == "" {
+				a.OtherSegmentID = om.SegmentID
+			}
+			if a.OtherChunkID == "" {
+				a.OtherChunkID = om.ChunkID
+			}
+			if a.OtherTimeNs == 0 {
+				a.OtherTimeNs = om.StartNs
+			}
+		}
+	}
+}
+
+func backfillMarkerSegments(markers []model.Marker, segments []model.CaptureSegment) {
+	for i := range markers {
+		if markers[i].SegmentID != "" {
+			continue
+		}
+		matches := []string{}
+		for _, segment := range segments {
+			if markers[i].StartNs >= segment.StartNs && markers[i].EndNs <= segment.EndNs {
+				matches = append(matches, segment.ID)
+			}
+		}
+		if len(matches) == 1 {
+			markers[i].SegmentID = matches[0]
+		}
+	}
 }
 
 func sameSignature(a, b *model.Marker) bool {
@@ -208,7 +276,10 @@ func (s *Server) crossDiff(w http.ResponseWriter, r *http.Request) {
 	}
 	_, baseChunks, _ := s.store.GetCapture(align.BaseCaptureID)
 	_, otherChunks, _ := s.store.GetCapture(align.OtherCaptureID)
-	_, mapping, err := alignment.Build(align, baseChunks, otherChunks)
+	base.Markers = append([]model.Marker(nil), base.Markers...)
+	other.Markers = append([]model.Marker(nil), other.Markers...)
+	enrichLegacyAnchors(&align, base.Markers, other.Markers, baseChunks, otherChunks)
+	align, mapping, err := alignment.Build(align, baseChunks, otherChunks)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

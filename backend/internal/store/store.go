@@ -70,6 +70,9 @@ func NewPersistent(path string) (*Store, error) {
 	if data.Chunks != nil {
 		s.chunks = data.Chunks
 	}
+	for captureID := range s.chunks {
+		model.NormalizeChunkSegments(s.chunks[captureID])
+	}
 	if data.Configs != nil {
 		s.configs = data.Configs
 	}
@@ -135,7 +138,8 @@ func (s *Store) AddChunks(in []model.Chunk) ([]model.Chunk, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]model.Chunk, 0, len(in))
-	for _, chunk := range in {
+	for chunkIndex := range in {
+		chunk := in[chunkIndex]
 		if _, ok := s.captures[chunk.CaptureID]; !ok {
 			return nil, fmt.Errorf("unknown capture %q", chunk.CaptureID)
 		}
@@ -146,11 +150,25 @@ func (s *Store) AddChunks(in []model.Chunk) ([]model.Chunk, error) {
 			chunk.ID = newID()
 		}
 		s.chunks[chunk.CaptureID] = append(s.chunks[chunk.CaptureID], chunk)
-		sort.SliceStable(s.chunks[chunk.CaptureID], func(i, j int) bool {
-			return s.chunks[chunk.CaptureID][i].Index < s.chunks[chunk.CaptureID][j].Index
-		})
-		out = append(out, chunk)
 	}
+	for captureID := range s.chunks {
+		sort.SliceStable(s.chunks[captureID], func(i, j int) bool {
+			return s.chunks[captureID][i].Index < s.chunks[captureID][j].Index
+		})
+		model.NormalizeChunkSegments(s.chunks[captureID])
+	}
+	outIDs := map[string]bool{}
+	for _, chunk := range in {
+		outIDs[chunk.ID] = true
+	}
+	for captureID := range s.chunks {
+		for _, chunk := range s.chunks[captureID] {
+			if outIDs[chunk.ID] {
+				out = append(out, chunk)
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Index < out[j].Index })
 	s.saveLocked()
 	return out, nil
 }

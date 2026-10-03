@@ -1,7 +1,6 @@
 package compare
 
 import (
-	"fmt"
 	"math"
 	"sort"
 
@@ -12,6 +11,7 @@ import (
 const (
 	CauseSignal          = "actual-signal"
 	CauseSamplingMissing = "sampling-missing"
+	CauseClockDrift      = "clock-drift"
 	CauseParameters      = "protocol-parameters"
 	CauseUnmatched       = "unmatched"
 )
@@ -24,6 +24,12 @@ type Coverage struct {
 type CrossMarkerDiff struct {
 	Base               *model.Marker `json:"base,omitempty"`
 	Other              *model.Marker `json:"other,omitempty"`
+	BaseSegmentID      string        `json:"baseSegmentId,omitempty"`
+	OtherSegmentID     string        `json:"otherSegmentId,omitempty"`
+	BaseChunkID        string        `json:"baseChunkId,omitempty"`
+	OtherChunkID       string        `json:"otherChunkId,omitempty"`
+	AlignmentID        string        `json:"alignmentId,omitempty"`
+	AnchorIDs          []string      `json:"anchorIds,omitempty"`
 	MappedStartNs      int64         `json:"mappedStartNs,omitempty"`
 	MappedEndNs        int64         `json:"mappedEndNs,omitempty"`
 	OtherNativeStartNs int64         `json:"otherNativeStartNs,omitempty"`
@@ -35,17 +41,18 @@ type CrossMarkerDiff struct {
 }
 
 type CrossReport struct {
-	AlignmentID    string              `json:"alignmentId"`
-	BaseResultID   string              `json:"baseResultId"`
-	OtherResultID  string              `json:"otherResultId"`
-	Status         string              `json:"status"`
-	OffsetSummary  string              `json:"offsetSummary,omitempty"`
-	Segments       []alignment.Segment `json:"segments"`
-	Identical      bool                `json:"identical"`
-	DiffCount      int                 `json:"diffCount"`
-	UnmatchedCount int                 `json:"unmatchedCount"`
-	Diffs          []CrossMarkerDiff   `json:"diffs"`
-	OtherLocations []CrossMarkerDiff   `json:"otherLocations"`
+	AlignmentID    string                    `json:"alignmentId"`
+	BaseResultID   string                    `json:"baseResultId"`
+	OtherResultID  string                    `json:"otherResultId"`
+	Status         string                    `json:"status"`
+	OffsetSummary  string                    `json:"offsetSummary,omitempty"`
+	Segments       []alignment.Segment       `json:"segments"`
+	Conflicts      []model.AlignmentConflict `json:"conflicts,omitempty"`
+	Identical      bool                      `json:"identical"`
+	DiffCount      int                       `json:"diffCount"`
+	UnmatchedCount int                       `json:"unmatchedCount"`
+	Diffs          []CrossMarkerDiff         `json:"diffs"`
+	OtherLocations []CrossMarkerDiff         `json:"otherLocations"`
 }
 
 type matched struct {
@@ -57,12 +64,9 @@ type matched struct {
 func CrossResults(align model.Alignment, mapping alignment.Mapping, base, other model.Result, baseCfg, otherCfg model.Config, baseChunks, otherChunks []model.Chunk) CrossReport {
 	report := CrossReport{
 		AlignmentID: align.ID, BaseResultID: base.ID, OtherResultID: other.ID, Status: align.Status,
-		Segments: mapping.Segments, Diffs: []CrossMarkerDiff{}, OtherLocations: []CrossMarkerDiff{},
+		Segments: mapping.Segments, Conflicts: align.Conflicts, Diffs: []CrossMarkerDiff{}, OtherLocations: []CrossMarkerDiff{},
 	}
-	if len(mapping.Segments) > 0 {
-		s := mapping.Segments[0]
-		report.OffsetSummary = fmt.Sprintf("起点偏移 %d ns；局部漂移 %.6f ns/ns", s.OffsetNs, s.DriftRate)
-	}
+	report.OffsetSummary = mapping.SegmentSummary()
 	if align.Status != alignment.StatusReady {
 		return report
 	}
@@ -91,7 +95,7 @@ func CrossResults(align model.Alignment, mapping alignment.Mapping, base, other 
 			}
 		}
 		if bm != nil && om != nil {
-			mapped, _ := mapping.MapInterval(om.StartNs, om.EndNs, uncertaintyFor(om, otherChunks))
+			mapped, _ := mapping.MapInterval(om.SegmentID, om.StartNs, om.EndNs, uncertaintyFor(om, otherChunks))
 			pairs = append(pairs, matched{base: bm, other: om, mapped: mapped})
 		}
 	}
@@ -101,7 +105,7 @@ func CrossResults(align model.Alignment, mapping alignment.Mapping, base, other 
 		if anchoredOther[om.ID] {
 			continue
 		}
-		mapped, ok := mapping.MapInterval(om.StartNs, om.EndNs, uncertaintyFor(om, otherChunks))
+		mapped, ok := mapping.MapInterval(om.SegmentID, om.StartNs, om.EndNs, uncertaintyFor(om, otherChunks))
 		if !ok {
 			continue
 		}
@@ -109,6 +113,9 @@ func CrossResults(align model.Alignment, mapping alignment.Mapping, base, other 
 		for bi := range base.Markers {
 			bm := &base.Markers[bi]
 			if anchoredBase[bm.ID] {
+				continue
+			}
+			if bm.SegmentID != mapped.BaseSegmentID {
 				continue
 			}
 			iv := alignment.Interval{Start: bm.StartNs, End: bm.EndNs, Half: uncertaintyFor(bm, baseChunks)}
@@ -135,9 +142,24 @@ func CrossResults(align model.Alignment, mapping alignment.Mapping, base, other 
 		usedBase[bi] = true
 		usedOther[oi] = true
 		if sameDecodedEvent(p.base, p.other) {
+			baseCenter := (p.base.StartNs + p.base.EndNs) / 2
+			mappedCenter := (p.mapped.Start + p.mapped.End) / 2
+			tolerance := p.mapped.Half + uncertaintyFor(p.base, baseChunks)
+			residual := baseCenter - mappedCenter
+			if residual < 0 {
+				residual = -residual
+			}
+			if residual > tolerance {
+				diff := CrossMarkerDiff{Base: p.base, Other: p.other, MappedStartNs: p.mapped.Start, MappedEndNs: p.mapped.End, ConfidenceHalfNs: p.mapped.Half, Cause: CauseClockDrift, CauseText: "时钟漂移：解码事件相同，但段内时间残差超出锚点可信范围", Detail: "不把该时间偏差解释为协议内容或参数变化"}
+				diff.AnchorIDs = anchorEvidence(align, p.base.ID, p.other.ID)
+				diff.AlignmentID = align.ID
+				report.Diffs = append(report.Diffs, withNativeRange(diff, mapping))
+			}
 			continue
 		}
 		diff := classifyCross(p.base, p.other, p.mapped, baseCfg, otherCfg)
+		diff.AnchorIDs = anchorEvidence(align, p.base.ID, p.other.ID)
+		diff.AlignmentID = align.ID
 		report.Diffs = append(report.Diffs, withNativeRange(diff, mapping))
 	}
 
@@ -155,22 +177,41 @@ func CrossResults(align model.Alignment, mapping alignment.Mapping, base, other 
 			continue
 		}
 		om := &other.Markers[oi]
-		mapped, _ := mapping.MapInterval(om.StartNs, om.EndNs, uncertaintyFor(om, otherChunks))
 		if usedByBase(om.ID, base.Markers) {
 			continue
 		}
 		diff := unmatchedOrMissing(om, false, mapping, baseCoverage, otherCoverage, baseGap, otherChunks)
-		diff.MappedStartNs, diff.MappedEndNs = mapped.Start, mapped.End
-		diff.ConfidenceHalfNs = mapped.Half
+		if mapped, ok := mapping.MapInterval(om.SegmentID, om.StartNs, om.EndNs, uncertaintyFor(om, otherChunks)); ok {
+			diff.MappedStartNs, diff.MappedEndNs = mapped.Start, mapped.End
+			diff.ConfidenceHalfNs = mapped.Half
+			diff.BaseSegmentID = mapped.BaseSegmentID
+			diff.AnchorIDs = mapped.AnchorIDs
+		}
 		report.Diffs = append(report.Diffs, diff)
 	}
 
 	for i := range other.Markers {
 		m := &other.Markers[i]
-		mapped, _ := mapping.MapInterval(m.StartNs, m.EndNs, uncertaintyFor(m, otherChunks))
-		report.OtherLocations = append(report.OtherLocations, CrossMarkerDiff{Other: m, MappedStartNs: mapped.Start, MappedEndNs: mapped.End, ConfidenceHalfNs: mapped.Half})
+		mapped, _ := mapping.MapInterval(m.SegmentID, m.StartNs, m.EndNs, uncertaintyFor(m, otherChunks))
+		diff := CrossMarkerDiff{Other: m, MappedStartNs: mapped.Start, MappedEndNs: mapped.End, ConfidenceHalfNs: mapped.Half, AlignmentID: align.ID, OtherSegmentID: m.SegmentID, OtherChunkID: m.ChunkID, BaseSegmentID: mapped.BaseSegmentID, AnchorIDs: mapped.AnchorIDs}
+		report.OtherLocations = append(report.OtherLocations, withNativeRange(diff, mapping))
 	}
 	sort.SliceStable(report.Diffs, func(i, j int) bool { return diffSortKey(report.Diffs[i]) < diffSortKey(report.Diffs[j]) })
+	for i := range report.Diffs {
+		report.Diffs[i].AlignmentID = align.ID
+		if report.Diffs[i].BaseSegmentID == "" && report.Diffs[i].Base != nil {
+			report.Diffs[i].BaseSegmentID = report.Diffs[i].Base.SegmentID
+		}
+		if report.Diffs[i].OtherSegmentID == "" && report.Diffs[i].Other != nil {
+			report.Diffs[i].OtherSegmentID = report.Diffs[i].Other.SegmentID
+		}
+		if report.Diffs[i].BaseChunkID == "" && report.Diffs[i].Base != nil {
+			report.Diffs[i].BaseChunkID = report.Diffs[i].Base.ChunkID
+		}
+		if report.Diffs[i].OtherChunkID == "" && report.Diffs[i].Other != nil {
+			report.Diffs[i].OtherChunkID = report.Diffs[i].Other.ChunkID
+		}
+	}
 	report.DiffCount = 0
 	for _, d := range report.Diffs {
 		if d.Cause != CauseUnmatched {
@@ -233,25 +274,50 @@ func unmatchedOrMissing(m *model.Marker, isBase bool, mapping alignment.Mapping,
 	var target alignment.Interval
 	if isBase {
 		target = iv
+		target.BaseSegmentID = m.SegmentID
 	} else {
-		target, _ = mapping.MapInterval(m.StartNs, m.EndNs, iv.Half)
+		var ok bool
+		target, ok = mapping.MapInterval(m.SegmentID, m.StartNs, m.EndNs, iv.Half)
+		if !ok {
+			return CrossMarkerDiff{Other: m, OtherSegmentID: m.SegmentID, OtherChunkID: m.ChunkID, Cause: CauseUnmatched, CauseText: "证据不足：该采集段没有任何锚点，不能跨时钟重置借用另一轮映射", Detail: "保留该段；相同时间戳不代表同一事件", MappedStartNs: m.StartNs, MappedEndNs: m.EndNs, ConfidenceHalfNs: iv.Half}
+		}
 	}
 	if intervalHits(mappedGaps, target) || !intervalHits(baseCoverIf(isBase, baseCover, otherCover), target) {
-		return CrossMarkerDiff{Base: ternary(isBase, m), Other: ternary(!isBase, m), Cause: CauseSamplingMissing, CauseText: "采样缺段：另一份采样在可信时间范围内没有覆盖该事件", Detail: "该差异不归因于协议或信号，不补造缺失波形", MappedStartNs: target.Start, MappedEndNs: target.End, ConfidenceHalfNs: target.Half}
+		return CrossMarkerDiff{Base: ternary(isBase, m), Other: ternary(!isBase, m), Cause: CauseSamplingMissing, CauseText: "采样缺段：另一份采样在可信时间范围内没有覆盖该事件", Detail: "该差异不归因于协议或信号，不补造缺失波形", MappedStartNs: target.Start, MappedEndNs: target.End, ConfidenceHalfNs: target.Half, BaseSegmentID: target.BaseSegmentID, OtherSegmentID: target.OtherSegmentID, AnchorIDs: target.AnchorIDs}
 	}
-	return CrossMarkerDiff{Base: ternary(isBase, m), Other: ternary(!isBase, m), Cause: CauseUnmatched, CauseText: "证据不足：未找到可唯一对应的共同事件", Detail: "保留无法对应的片段，不强行拉伸成一致波形", MappedStartNs: target.Start, MappedEndNs: target.End, ConfidenceHalfNs: target.Half}
+	return CrossMarkerDiff{Base: ternary(isBase, m), Other: ternary(!isBase, m), Cause: CauseUnmatched, CauseText: "证据不足：未找到可唯一对应的共同事件", Detail: "保留无法对应的片段，不强行拉伸成一致波形", MappedStartNs: target.Start, MappedEndNs: target.End, ConfidenceHalfNs: target.Half, BaseSegmentID: target.BaseSegmentID, OtherSegmentID: target.OtherSegmentID, AnchorIDs: target.AnchorIDs}
 }
 
 func withNativeRange(diff CrossMarkerDiff, mapping alignment.Mapping) CrossMarkerDiff {
+	if diff.Other != nil {
+		diff.OtherSegmentID = diff.Other.SegmentID
+		diff.OtherChunkID = diff.Other.ChunkID
+	}
 	if diff.Base == nil {
 		return diff
 	}
-	native, ok := mapping.MapBaseInterval(diff.Base.StartNs, diff.Base.EndNs, diff.ConfidenceHalfNs)
+	native, ok := mapping.MapBaseInterval(diff.Base.SegmentID, diff.Base.StartNs, diff.Base.EndNs, diff.ConfidenceHalfNs)
 	if ok {
 		diff.OtherNativeStartNs = native.Start
 		diff.OtherNativeEndNs = native.End
+		diff.BaseSegmentID = diff.Base.SegmentID
+		diff.OtherSegmentID = native.OtherSegmentID
+		diff.BaseChunkID = diff.Base.ChunkID
+	}
+	if diff.Other != nil {
+		diff.OtherSegmentID = diff.Other.SegmentID
+		diff.OtherChunkID = diff.Other.ChunkID
 	}
 	return diff
+}
+
+func anchorEvidence(align model.Alignment, baseMarkerID, otherMarkerID string) []string {
+	for _, a := range align.Anchors {
+		if a.BaseMarkerID == baseMarkerID && a.OtherMarkerID == otherMarkerID {
+			return []string{a.ID}
+		}
+	}
+	return nil
 }
 
 func ternary(ok bool, m *model.Marker) *model.Marker {
@@ -307,7 +373,7 @@ func mappedCover(chunks []model.Chunk, mapping alignment.Mapping) []Coverage {
 		if len(c.Levels) == 0 {
 			continue
 		}
-		iv, _ := mapping.MapInterval(c.StartTime, c.EndTime(), c.IntervalNs/2+1)
+		iv, _ := mapping.MapInterval(c.SegmentID, c.StartTime, c.EndTime(), c.IntervalNs/2+1)
 		out = append(out, Coverage{StartNs: iv.Start, EndNs: iv.End})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StartNs < out[j].StartNs })
@@ -328,7 +394,7 @@ func mappedGapCoverage(result model.Result, mapping alignment.Mapping) []Coverag
 	out := []Coverage{}
 	for _, m := range result.Markers {
 		if m.Code == "sampling-gap" {
-			iv, _ := mapping.MapInterval(m.StartNs, m.EndNs, 1)
+			iv, _ := mapping.MapInterval(m.SegmentID, m.StartNs, m.EndNs, 1)
 			out = append(out, Coverage{StartNs: iv.Start, EndNs: iv.End})
 		}
 	}

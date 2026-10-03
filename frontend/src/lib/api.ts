@@ -25,7 +25,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ baseResultId, otherResultId }),
     }),
-  createAlignment: (baseResultId: string, otherResultId: string, anchors: Array<{ baseMarkerId: string; otherMarkerId: string; uncertaintyNs?: number }>) =>
+  createAlignment: (baseResultId: string, otherResultId: string, anchors: Array<{ baseMarkerId: string; otherMarkerId: string; baseSegmentId?: string; otherSegmentId?: string; uncertaintyNs?: number; manualOrderConfirmed?: boolean; evidence?: string }>) =>
     request<{ alignment: Alignment; segments: unknown[]; status: string }>('/api/alignments', {
       method: 'POST',
       body: JSON.stringify({ name: `跨采样对齐 ${new Date().toLocaleString()}`, baseResultId, otherResultId, anchors }),

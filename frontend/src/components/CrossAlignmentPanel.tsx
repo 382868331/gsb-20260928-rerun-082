@@ -7,10 +7,10 @@ interface Props {
   onOpen: (captureId: string, marker: Marker) => void;
 }
 
-interface AnchorDraft { baseMarkerId: string; otherMarkerId: string }
+interface AnchorDraft { baseMarkerId: string; otherMarkerId: string; manualOrderConfirmed: boolean }
 
 function markerLabel(marker: Marker) {
-  return marker.label + ' @' + (marker.startNs / 1000).toFixed(1) + 'µs';
+  return (marker.segmentId ?? 'segment') + ' · ' + marker.label + ' @' + (marker.startNs / 1000).toFixed(1) + 'µs';
 }
 
 function resultOf(demos: DemoCapture[], resultId?: string) {
@@ -24,7 +24,7 @@ function resultOf(demos: DemoCapture[], resultId?: string) {
 export function CrossAlignmentPanel({ demos, onOpen }: Props) {
   const [baseResultId, setBaseResultId] = useState<string>();
   const [otherResultId, setOtherResultId] = useState<string>();
-  const [drafts, setDrafts] = useState<AnchorDraft[]>([{ baseMarkerId: '', otherMarkerId: '' }]);
+  const [drafts, setDrafts] = useState<AnchorDraft[]>([{ baseMarkerId: '', otherMarkerId: '', manualOrderConfirmed: true }]);
   const [alignment, setAlignment] = useState<Alignment>();
   const [report, setReport] = useState<CrossDiffReport>();
   const [busy, setBusy] = useState(false);
@@ -42,7 +42,19 @@ export function CrossAlignmentPanel({ demos, onOpen }: Props) {
     setBusy(true);
     setError(undefined);
     try {
-      const saved = await api.createAlignment(baseResultId, otherResultId, drafts.filter((d) => d.baseMarkerId && d.otherMarkerId));
+      const anchors = drafts.filter((d) => d.baseMarkerId && d.otherMarkerId).map((draft) => {
+        const baseMarker = base!.result.markers.find((m) => m.id === draft.baseMarkerId);
+        const otherMarker = other!.result.markers.find((m) => m.id === draft.otherMarkerId);
+        return {
+          baseMarkerId: draft.baseMarkerId,
+          otherMarkerId: draft.otherMarkerId,
+          baseSegmentId: baseMarker?.segmentId,
+          otherSegmentId: otherMarker?.segmentId,
+          manualOrderConfirmed: draft.manualOrderConfirmed,
+          evidence: draft.manualOrderConfirmed ? '用户在面板按锚点顺序确认跨段事件先后' : undefined,
+        };
+      });
+      const saved = await api.createAlignment(baseResultId, otherResultId, anchors);
       setAlignment(saved.alignment);
       setReport(await api.crossDiff(saved.alignment.id));
     } catch (err) {
@@ -91,8 +103,12 @@ export function CrossAlignmentPanel({ demos, onOpen }: Props) {
             <option value="" disabled>另一事件…</option>
             {other.result.markers.filter((m) => m.kind === 'byte').map((m) => <option key={m.id} value={m.id}>{markerLabel(m)}</option>)}
           </select>
+          <label className="inline-check">
+            <input type="checkbox" checked={draft.manualOrderConfirmed} onChange={(e) => setDrafts((items) => items.map((it, i) => i === index ? { ...it, manualOrderConfirmed: e.target.checked } : it))} />
+            顺序确认
+          </label>
         </div>)}
-        <button onClick={() => setDrafts((items) => [...items, { baseMarkerId: '', otherMarkerId: '' }])}>增加共同事件</button>
+        <button onClick={() => setDrafts((items) => [...items, { baseMarkerId: '', otherMarkerId: '', manualOrderConfirmed: true }])}>增加共同事件</button>
       </div>}
       <button disabled={busy || !canAlign} onClick={align}>{busy ? '对齐中…' : '建立新的对齐比较'}</button>
       {error && <p className="error-text">{error}</p>}
@@ -114,7 +130,8 @@ export function CrossAlignmentPanel({ demos, onOpen }: Props) {
         </ul>}
         <h3>锚点与排除候选</h3>
         {alignment?.anchors.map((anchor) => <details key={anchor.id} open>
-          <summary>{anchor.id}: {anchor.baseTimeNs}ns ↔ {anchor.otherTimeNs}ns，±{anchor.uncertaintyNs}ns</summary>
+          <summary>{anchor.id}: {anchor.baseSegmentId}@{anchor.baseTimeNs}ns ↔ {anchor.otherSegmentId}@{anchor.otherTimeNs}ns，±{anchor.uncertaintyNs}ns{anchor.manualOrderConfirmed ? '，顺序已人工确认' : ''}</summary>
+          {anchor.evidence && <p>{anchor.evidence}</p>}
           {candidates.filter((candidate) => candidate.anchorId === anchor.id).map((candidate) => <p key={candidate.id} className={candidate.status}>
             {candidate.status === 'accepted' ? '采纳' : '排除'}：{candidate.reason}
             {candidate.residualNs !== undefined && <span>；残差 {candidate.residualNs}ns</span>}

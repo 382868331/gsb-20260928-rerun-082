@@ -16,7 +16,7 @@ type change struct {
 
 func CreateDemo(st *store.Store) map[string]any {
 	captures := make([]map[string]any, 0, 2)
-	for _, name := range []string{"内置 UART 核对波形", "内置 SPI 核对波形", "跨采样人工波形 A", "跨采样人工波形 B"} {
+	for _, name := range []string{"内置 UART 核对波形", "内置 SPI 核对波形", "跨采样人工波形 A", "跨采样人工波形 B", "时钟重置人工波形 A", "时钟重置人工波形 B"} {
 		if capture, ok := st.FindCaptureByName(name); ok {
 			// 示例已存在：按原采样身份重开用户保存过的配置与结果，
 			// 绝不重复创建同名采样，刷新页面后仍是同一份对照。
@@ -42,8 +42,12 @@ func CreateDemo(st *store.Store) map[string]any {
 			captures = append(captures, createSPIDemo(st))
 		case "跨采样人工波形 A":
 			captures = append(captures, createCrossCapture(st, true))
-		default:
+		case "跨采样人工波形 B":
 			captures = append(captures, createCrossCapture(st, false))
+		case "时钟重置人工波形 A":
+			captures = append(captures, createClockResetCapture(st, true))
+		default:
+			captures = append(captures, createClockResetCapture(st, false))
 		}
 	}
 	return map[string]any{"captures": captures}

@@ -65,10 +65,17 @@ func (d *SPIDecoder) Decode(captureName string, chunks []model.Chunk, cfg model.
 		Markers:       []model.Marker{},
 	}
 	markerSeq := 0
+	var currentChunk model.Chunk
 	addMarker := func(m model.Marker) {
 		markerSeq++
 		if m.ID == "" {
 			m.ID = fmt.Sprintf("%s-m%d", cfg.ID, markerSeq)
+		}
+		if m.SegmentID == "" {
+			m.SegmentID = currentChunk.SegmentID
+		}
+		if m.ChunkID == "" {
+			m.ChunkID = currentChunk.ID
 		}
 		result.Markers = append(result.Markers, m)
 	}
@@ -104,9 +111,15 @@ func (d *SPIDecoder) Decode(captureName string, chunks []model.Chunk, cfg model.
 		if len(chunk.Levels) == 0 {
 			continue
 		}
+		currentChunk = chunk
 		if haveLast {
 			expectedNext := lastTime + chunk.IntervalNs
-			if chunk.StartTime != expectedNext {
+			if chunk.ClockReset {
+				addMarker(model.Marker{Kind: "error", Code: "clock-reset", Severity: "info", Channel: p.DataChannel, StartNs: chunk.StartTime, EndNs: chunk.StartTime, Label: "采样时钟重置：后续时间戳进入新的采集段，不与重置前同名时间拼接"})
+				bits = nil
+				haveLast = false
+				csActive = p.CSChannel < 0
+			} else if chunk.StartTime != expectedNext {
 				if len(bits) > 0 {
 					flushWithCode(chunk.StartTime, "sampling-gap", "采样间隙：跨块未完成字节不能接为正常字节")
 				} else {

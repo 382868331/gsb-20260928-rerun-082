@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"logicstation/internal/model"
 	"logicstation/internal/store"
 )
 
@@ -43,12 +44,12 @@ func TestDemoIsIdempotentAndReopensSavedComparisons(t *testing.T) {
 	first := call()
 	second := call()
 	// 再次载入示例必须复用同一采样身份，而不是造同名新示例。
-	if strings.Count(second, "内置 UART 核对波形") != 1 || strings.Count(second, "内置 SPI 核对波形") != 1 {
+	if strings.Count(second, "内置 UART 核对波形") != 1 || strings.Count(second, "内置 SPI 核对波形") != 1 || strings.Count(second, "时钟重置人工波形") != 2 {
 		t.Fatalf("demo must list each capture once: %s", second)
 	}
 	captures := st.ListCaptures()
-	if len(captures) != 4 {
-		t.Fatalf("captures after reload=%d, want 4", len(captures))
+	if len(captures) != 6 {
+		t.Fatalf("captures after reload=%d, want 6", len(captures))
 	}
 	if !strings.Contains(first, captures[0].ID) || !strings.Contains(second, captures[0].ID) {
 		t.Fatalf("reload must keep original capture identity")
@@ -77,10 +78,18 @@ func TestCrossCaptureAlignmentPersistsAndClassifiesGap(t *testing.T) {
 		t.Fatalf("demo status=%d body=%s", demoRec.Code, demoRec.Body.String())
 	}
 	alignments := st.ListAlignments()
-	if len(alignments) != 1 {
-		t.Fatalf("alignments=%d, want 1", len(alignments))
+	if len(alignments) != 2 {
+		t.Fatalf("alignments=%d, want 2", len(alignments))
 	}
-	align := alignments[0]
+	var align model.Alignment
+	for _, candidate := range alignments {
+		if candidate.Name == "重复脉冲/缺段/漂移变化核对" {
+			align = candidate
+		}
+	}
+	if align.ID == "" {
+		t.Fatalf("original duplicate-pulse alignment not found: %+v", alignments)
+	}
 	if len(align.Anchors) != 4 || len(align.ExcludedCandidates) == 0 {
 		t.Fatalf("alignment does not retain every anchor and excluded duplicate candidate: %+v", align)
 	}
