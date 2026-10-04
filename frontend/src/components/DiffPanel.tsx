@@ -23,6 +23,7 @@ function diffToMarker(diff: MarkerDiff, suffix: string): Marker {
     channel: diff.channel,
     severity: 'error',
     label: suffix,
+    segmentIndex: diff.base?.segmentIndex ?? diff.other?.segmentIndex ?? 0,
   };
 }
 

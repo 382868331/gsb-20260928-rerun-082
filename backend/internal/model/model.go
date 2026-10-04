@@ -69,6 +69,9 @@ type Marker struct {
 	Severity string `json:"severity"`
 	Value    *byte  `json:"value,omitempty"`
 	RawBits  string `json:"rawBits,omitempty"`
+	// SegmentIndex 标记所属的采集段（时钟重置把一份采样分成多段，
+	// 重置前后相同的时间戳属于不同段，不能当成同一事件）。
+	SegmentIndex int `json:"segmentIndex"`
 }
 
 type Result struct {

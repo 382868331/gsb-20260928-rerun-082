@@ -47,8 +47,8 @@ func TestDemoIsIdempotentAndReopensSavedComparisons(t *testing.T) {
 		t.Fatalf("demo must list each capture once: %s", second)
 	}
 	captures := st.ListCaptures()
-	if len(captures) != 4 {
-		t.Fatalf("captures after reload=%d, want 4", len(captures))
+	if len(captures) != 6 {
+		t.Fatalf("captures after reload=%d, want 6", len(captures))
 	}
 	if !strings.Contains(first, captures[0].ID) || !strings.Contains(second, captures[0].ID) {
 		t.Fatalf("reload must keep original capture identity")
@@ -77,8 +77,8 @@ func TestCrossCaptureAlignmentPersistsAndClassifiesGap(t *testing.T) {
 		t.Fatalf("demo status=%d body=%s", demoRec.Code, demoRec.Body.String())
 	}
 	alignments := st.ListAlignments()
-	if len(alignments) != 1 {
-		t.Fatalf("alignments=%d, want 1", len(alignments))
+	if len(alignments) != 2 {
+		t.Fatalf("alignments=%d, want 2", len(alignments))
 	}
 	align := alignments[0]
 	if len(align.Anchors) != 4 || len(align.ExcludedCandidates) == 0 {
@@ -143,5 +143,127 @@ func TestDiffEndpointLocatesFirstDifference(t *testing.T) {
 	handler.ServeHTTP(badRec, badReq)
 	if badRec.Code != http.StatusBadRequest {
 		t.Fatalf("cross-capture diff status=%d, want 400", badRec.Code)
+	}
+}
+
+func demoResetAlignment(t *testing.T, handler http.Handler, st *store.Store) (string, string) {
+	t.Helper()
+	demoReq := httptest.NewRequest(http.MethodPost, "/api/demo", strings.NewReader("{}"))
+	demoRec := httptest.NewRecorder()
+	handler.ServeHTTP(demoRec, demoReq)
+	if demoRec.Code != http.StatusOK {
+		t.Fatalf("demo status=%d", demoRec.Code)
+	}
+	for _, a := range st.ListAlignments() {
+		if strings.Contains(a.Name, "时钟重置") {
+			return a.ID, a.BaseResultID
+		}
+	}
+	t.Fatalf("reset demo alignment not preset")
+	return "", ""
+}
+
+// 两次时钟重置 + 重复报文的人工采样核对：跨段差异必须回到原始采集段，
+// 跨段跳转不能进入错误的一轮同名时间区间。
+func TestResetDemoCrossDiffTracesSegmentsAndRounds(t *testing.T) {
+	st := store.New()
+	handler := NewServer(st, "")
+	alignmentID, _ := demoResetAlignment(t, handler, st)
+	req := httptest.NewRequest(http.MethodPost, "/api/results/cross-diff", strings.NewReader(fmt.Sprintf("{\"alignmentId\":%q}", alignmentID)))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cross-diff=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var report struct {
+		Diffs []struct {
+			Cause              string   `json:"cause"`
+			BaseSegmentIndex   int      `json:"baseSegmentIndex"`
+			OtherSegmentIndex  int      `json:"otherSegmentIndex"`
+			OtherNativeStartNs int64    `json:"otherNativeStartNs"`
+			EvidenceAnchorIDs  []string `json:"evidenceAnchorIds"`
+		} `json:"diffs"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	var signal, drift bool
+	for _, d := range report.Diffs {
+		switch d.Cause {
+		case "actual-signal":
+			// C 段 1 的 C 字节 ↔ D 的 X 字节：真实协议内容变化。
+			if d.BaseSegmentIndex != 1 || len(d.EvidenceAnchorIDs) == 0 {
+				t.Fatalf("signal diff must trace to segment 1 with anchor evidence: %+v", d)
+			}
+			// 反查另一采样必须落在第二轮（约 450000），不能进入第一轮同名区间。
+			if d.OtherNativeStartNs < 300000 || d.OtherNativeStartNs > 600000 {
+				t.Fatalf("segment 1 jump landed in wrong round: %+v", d)
+			}
+			signal = true
+		case "clock-drift":
+			// 段 2 的 B：内容一致但残差超限，解释为漂移而非信号差异。
+			if d.BaseSegmentIndex != 2 {
+				t.Fatalf("drift diff must come from segment 2: %+v", d)
+			}
+			drift = true
+		}
+	}
+	if !signal || !drift {
+		t.Fatalf("expected actual-signal and clock-drift diffs: %s", rec.Body.String())
+	}
+}
+
+// 人工确认与现有对齐相矛盾时，指出冲突经过的锚点和段，旧决定不被静默改动。
+func TestAlignmentRevisionReportsConflictAndKeepsOldDecision(t *testing.T) {
+	st := store.New()
+	handler := NewServer(st, "")
+	_, baseResultID := demoResetAlignment(t, handler, st)
+	base, _ := st.GetResult(baseResultID)
+	var otherID string
+	for _, a := range st.ListAlignments() {
+		if strings.Contains(a.Name, "时钟重置") {
+			otherID = a.OtherResultID
+		}
+	}
+	other, _ := st.GetResult(otherID)
+	var baseBytes, otherBytes []string
+	for _, m := range base.Markers {
+		if m.Kind == "byte" {
+			baseBytes = append(baseBytes, m.ID)
+		}
+	}
+	for _, m := range other.Markers {
+		if m.Kind == "byte" {
+			otherBytes = append(otherBytes, m.ID)
+		}
+	}
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/alignments", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	// 同一采集段对内先后关系倒序：409 并指出冲突锚点和段。
+	bad := fmt.Sprintf("{\"name\":\"倒序\",\"baseResultId\":%q,\"otherResultId\":%q,\"anchors\":["+
+		"{\"baseMarkerId\":%q,\"otherMarkerId\":%q},{\"baseMarkerId\":%q,\"otherMarkerId\":%q}]}",
+		baseResultID, otherID, baseBytes[0], otherBytes[1], baseBytes[1], otherBytes[0])
+	if rec := post(bad); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "conflicts") {
+		t.Fatalf("contradictory ordering=%d body=%s", rec.Code, rec.Body.String())
+	}
+	// 修订某段锚点：同一基准事件连到另一对象，响应指出与旧对齐的冲突，
+	// 旧对齐及其锚点保持不变。
+	before := len(st.ListAlignments())
+	revised := fmt.Sprintf("{\"name\":\"修订\",\"baseResultId\":%q,\"otherResultId\":%q,\"anchors\":["+
+		"{\"baseMarkerId\":%q,\"otherMarkerId\":%q}]}",
+		baseResultID, otherID, baseBytes[0], otherBytes[2])
+	rec := post(revised)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revision=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "contradicts-saved-alignment") {
+		t.Fatalf("revision must report conflicts with saved alignment: %s", rec.Body.String())
+	}
+	if len(st.ListAlignments()) != before+1 {
+		t.Fatalf("revision must create a new alignment id, old one untouched")
 	}
 }

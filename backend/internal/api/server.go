@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -102,12 +103,23 @@ func (s *Server) createAlignment(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("anchor %d marker not found", i+1))
 			return
 		}
-		anchors = append(anchors, model.AlignmentAnchor{ID: fmt.Sprintf("anchor-%d", i+1), BaseMarkerID: bm.ID, OtherMarkerID: om.ID, BaseTimeNs: bm.StartNs, OtherTimeNs: om.StartNs, UncertaintyNs: req.UncertaintyNs})
+		anchors = append(anchors, model.AlignmentAnchor{
+			ID: fmt.Sprintf("anchor-%d", i+1), BaseMarkerID: bm.ID, OtherMarkerID: om.ID,
+			BaseTimeNs: bm.StartNs, OtherTimeNs: om.StartNs, UncertaintyNs: req.UncertaintyNs,
+			BaseSegmentIndex: bm.SegmentIndex, OtherSegmentIndex: om.SegmentIndex,
+		})
 	}
 	_, baseChunks, _ := s.store.GetCapture(base.CaptureID)
 	_, otherChunks, _ := s.store.GetCapture(other.CaptureID)
 	align, mapping, err := alignment.Build(model.Alignment{Name: in.Name, BaseCaptureID: base.CaptureID, OtherCaptureID: other.CaptureID, BaseResultID: base.ID, OtherResultID: other.ID, Anchors: anchors}, baseChunks, otherChunks)
 	if err != nil {
+		var conflictErr *alignment.ConflictError
+		if errors.As(err, &conflictErr) {
+			// 人工确认自相矛盾：指出冲突经过的锚点和段，不建立对齐。
+			w.WriteHeader(http.StatusConflict)
+			writeJSON(w, map[string]any{"error": conflictErr.Error(), "conflicts": conflictErr.Conflicts})
+			return
+		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -117,7 +129,41 @@ func (s *Server) createAlignment(w http.ResponseWriter, r *http.Request) {
 		httpError(w, err)
 		return
 	}
-	writeJSON(w, map[string]any{"alignment": saved, "segments": mapping.Segments, "status": saved.Status})
+	// 与既有对齐决定矛盾时明确指出（旧决定保持不可变，绝不静默改动），
+	// 修订以新对齐 ID 保存，只重算依赖它的比较。
+	conflicts := findCrossAlignmentConflicts(s.store.ListAlignments(), saved)
+	writeJSON(w, map[string]any{"alignment": saved, "segments": mapping.FlatSegments(), "status": saved.Status, "conflicts": conflicts})
+}
+
+// findCrossAlignmentConflicts 比较新对齐与此前保存的同一结果对对齐：
+// 同一基准事件被连到另一采样的不同事件（或反之）即为矛盾，
+// 报告冲突经过的锚点和采集段，旧对齐本身不被修改。
+func findCrossAlignmentConflicts(existing []model.Alignment, next model.Alignment) []model.AlignmentConflict {
+	conflicts := []model.AlignmentConflict{}
+	for _, prev := range existing {
+		if prev.ID == next.ID || prev.BaseResultID != next.BaseResultID || prev.OtherResultID != next.OtherResultID {
+			continue
+		}
+		for _, na := range next.Anchors {
+			for _, pa := range prev.Anchors {
+				sameBase := na.BaseMarkerID == pa.BaseMarkerID
+				sameOther := na.OtherMarkerID == pa.OtherMarkerID
+				if sameBase == sameOther {
+					continue
+				}
+				conflicts = append(conflicts, model.AlignmentConflict{
+					Kind:                "contradicts-saved-alignment",
+					Message:             fmt.Sprintf("新锚点 %s 与对齐 %s 的锚点 %s 矛盾：同一事件被连到不同对象；旧对齐保持不变，本次修订另存为新比较", na.ID, prev.ID, pa.ID),
+					PreviousAlignmentID: prev.ID,
+					PreviousAnchorID:    pa.ID,
+					NewAnchorID:         na.ID,
+					BaseSegmentIndex:    na.BaseSegmentIndex,
+					OtherSegmentIndex:   na.OtherSegmentIndex,
+				})
+			}
+		}
+	}
+	return conflicts
 }
 
 func buildCandidates(align model.Alignment, mapping alignment.Mapping, baseMarkers, otherMarkers []model.Marker) []model.AlignmentCandidate {
@@ -129,7 +175,11 @@ func buildCandidates(align model.Alignment, mapping alignment.Mapping, baseMarke
 			if om.ID == a.OtherMarkerID || !sameSignature(&bm, &om) {
 				continue
 			}
-			iv, _ := mapping.MapInterval(om.StartNs, om.EndNs, a.UncertaintyNs)
+			iv, ok := mapping.MapInterval(om.SegmentIndex, om.StartNs, om.EndNs, a.UncertaintyNs)
+			if !ok {
+				out = append(out, model.AlignmentCandidate{ID: fmt.Sprintf("%s-excluded-%d", a.ID, len(out)), AnchorID: a.ID, BaseMarkerID: bm.ID, OtherMarkerID: om.ID, BaseTimeNs: bm.StartNs, OtherTimeNs: om.StartNs, Status: alignment.CandidateExcluded, Reason: "同特征事件位于另一采集段，该段没有此锚点的对应证据"})
+				continue
+			}
 			residual := iv.Start - bm.StartNs
 			abs := residual
 			if abs < 0 {

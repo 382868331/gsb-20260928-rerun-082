@@ -58,6 +58,9 @@ export interface Marker {
   severity: 'info' | 'error';
   value?: number;
   rawBits?: string;
+  // 所属采集段：时钟重置把一份采样分成多段，
+  // 重置前后相同的时间戳属于不同段的不同事件。
+  segmentIndex: number;
 }
 
 export interface Result {
@@ -107,6 +110,8 @@ export interface AlignmentAnchor {
   baseTimeNs: number;
   otherTimeNs: number;
   uncertaintyNs: number;
+  baseSegmentIndex: number;
+  otherSegmentIndex: number;
 }
 
 export interface AlignmentCandidate {
@@ -142,6 +147,19 @@ export interface AlignmentSegment {
   endOtherNs: number;
   offsetNs: number;
   driftRate: number;
+  baseSegmentIndex: number;
+  otherSegmentIndex: number;
+}
+
+export interface AlignmentConflict {
+  kind: string;
+  message: string;
+  previousAlignmentId?: string;
+  previousAnchorId?: string;
+  newAnchorId?: string;
+  otherAnchorId?: string;
+  baseSegmentIndex: number;
+  otherSegmentIndex: number;
 }
 
 export interface CrossMarkerDiff {
@@ -152,9 +170,12 @@ export interface CrossMarkerDiff {
   otherNativeStartNs?: number;
   otherNativeEndNs?: number;
   confidenceHalfWidthNs: number;
-  cause: 'actual-signal' | 'sampling-missing' | 'protocol-parameters' | 'unmatched' | string;
+  cause: 'actual-signal' | 'sampling-missing' | 'protocol-parameters' | 'unmatched' | 'clock-drift' | string;
   causeText: string;
   detail: string;
+  baseSegmentIndex: number;
+  otherSegmentIndex: number;
+  evidenceAnchorIds?: string[];
 }
 
 export interface CrossDiffReport {
@@ -167,6 +188,7 @@ export interface CrossDiffReport {
   identical: boolean;
   diffCount: number;
   unmatchedCount: number;
+  driftCount: number;
   diffs: CrossMarkerDiff[];
   otherLocations: CrossMarkerDiff[];
 }

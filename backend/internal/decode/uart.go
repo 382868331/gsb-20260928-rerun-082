@@ -10,7 +10,8 @@ import (
 	"logicstation/internal/model"
 )
 
-const resultSchemaVersion = 1
+// 解码结果 schema 2：标记携带采集段序号（时钟重置分段）。
+const resultSchemaVersion = 2
 
 type UARTDecoder struct{}
 
@@ -85,11 +86,13 @@ func (d *UARTDecoder) Decode(captureName string, chunks []model.Chunk, cfg model
 	var lastTime int64
 	var lastLevel uint8
 	markerSeq := 0
+	segmentIndex := 0
 	addMarker := func(m model.Marker) {
 		markerSeq++
 		if m.ID == "" {
 			m.ID = fmt.Sprintf("%s-m%d", cfg.ID, markerSeq)
 		}
+		m.SegmentIndex = segmentIndex
 		result.Markers = append(result.Markers, m)
 	}
 
@@ -108,7 +111,17 @@ func (d *UARTDecoder) Decode(captureName string, chunks []model.Chunk, cfg model
 		if len(chunk.Levels) == 0 {
 			continue
 		}
-		if haveLast {
+		if haveLast && chunk.StartTime < lastTime {
+			// 时钟重置：时间戳回绕到较小值，后续块属于新采集段。
+			// 跨重置的半个帧不能接为正常字节，重置前后的相同时间戳是不同事件。
+			if frame != nil {
+				addMarker(model.Marker{Kind: "error", Code: "clock-reset", Severity: "error", Channel: p.Channel, StartNs: frame.start, EndNs: lastTime, Label: "时钟重置：跨重置未完成帧不能接为正常字节"})
+				frame = nil
+			}
+			segmentIndex++
+			addMarker(model.Marker{Kind: "error", Code: "clock-reset", Severity: "info", Channel: p.Channel, StartNs: chunk.StartTime, EndNs: chunk.StartTime, Label: "时钟重置：时间戳回绕，进入新采集段"})
+			haveLast = false
+		} else if haveLast {
 			expectedNext := lastTime + chunk.IntervalNs
 			if chunk.StartTime != expectedNext {
 				start := lastTime

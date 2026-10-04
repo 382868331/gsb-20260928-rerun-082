@@ -65,11 +65,13 @@ func (d *SPIDecoder) Decode(captureName string, chunks []model.Chunk, cfg model.
 		Markers:       []model.Marker{},
 	}
 	markerSeq := 0
+	segmentIndex := 0
 	addMarker := func(m model.Marker) {
 		markerSeq++
 		if m.ID == "" {
 			m.ID = fmt.Sprintf("%s-m%d", cfg.ID, markerSeq)
 		}
+		m.SegmentIndex = segmentIndex
 		result.Markers = append(result.Markers, m)
 	}
 
@@ -104,7 +106,16 @@ func (d *SPIDecoder) Decode(captureName string, chunks []model.Chunk, cfg model.
 		if len(chunk.Levels) == 0 {
 			continue
 		}
-		if haveLast {
+		if haveLast && chunk.StartTime < lastTime {
+			// 时钟重置：时间戳回绕，后续块属于新采集段；残位不补全。
+			if len(bits) > 0 {
+				flushWithCode(lastTime, "clock-reset", "时钟重置：跨重置未完成字节不能接为正常字节")
+			}
+			segmentIndex++
+			addMarker(model.Marker{Kind: "error", Code: "clock-reset", Severity: "info", Channel: p.DataChannel, StartNs: chunk.StartTime, EndNs: chunk.StartTime, Label: "时钟重置：时间戳回绕，进入新采集段"})
+			haveLast = false
+			csActive = p.CSChannel < 0
+		} else if haveLast {
 			expectedNext := lastTime + chunk.IntervalNs
 			if chunk.StartTime != expectedNext {
 				if len(bits) > 0 {

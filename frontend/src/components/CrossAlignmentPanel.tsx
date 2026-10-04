@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { api } from '../lib/api';
-import type { Alignment, CrossDiffReport, DemoCapture, Marker } from '../types';
+import type { Alignment, AlignmentConflict, CrossDiffReport, DemoCapture, Marker } from '../types';
 
 interface Props {
   demos: DemoCapture[];
@@ -10,7 +10,7 @@ interface Props {
 interface AnchorDraft { baseMarkerId: string; otherMarkerId: string }
 
 function markerLabel(marker: Marker) {
-  return marker.label + ' @' + (marker.startNs / 1000).toFixed(1) + 'µs';
+  return '段' + (marker.segmentIndex + 1) + ' · ' + marker.label + ' @' + (marker.startNs / 1000).toFixed(1) + 'µs';
 }
 
 function resultOf(demos: DemoCapture[], resultId?: string) {
@@ -27,6 +27,7 @@ export function CrossAlignmentPanel({ demos, onOpen }: Props) {
   const [drafts, setDrafts] = useState<AnchorDraft[]>([{ baseMarkerId: '', otherMarkerId: '' }]);
   const [alignment, setAlignment] = useState<Alignment>();
   const [report, setReport] = useState<CrossDiffReport>();
+  const [conflicts, setConflicts] = useState<AlignmentConflict[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -44,6 +45,7 @@ export function CrossAlignmentPanel({ demos, onOpen }: Props) {
     try {
       const saved = await api.createAlignment(baseResultId, otherResultId, drafts.filter((d) => d.baseMarkerId && d.otherMarkerId));
       setAlignment(saved.alignment);
+      setConflicts(saved.conflicts ?? []);
       setReport(await api.crossDiff(saved.alignment.id));
     } catch (err) {
       setError(String(err));
@@ -60,6 +62,7 @@ export function CrossAlignmentPanel({ demos, onOpen }: Props) {
     channel: diff.base?.channel ?? diff.other?.channel ?? 0,
     severity: 'error',
     label: diff.causeText,
+    segmentIndex: Math.max(0, diff.baseSegmentIndex),
   });
 
   const candidates = useMemo(() => alignment?.excludedCandidates ?? [], [alignment]);
@@ -96,25 +99,36 @@ export function CrossAlignmentPanel({ demos, onOpen }: Props) {
       </div>}
       <button disabled={busy || !canAlign} onClick={align}>{busy ? '对齐中…' : '建立新的对齐比较'}</button>
       {error && <p className="error-text">{error}</p>}
+      {conflicts.length > 0 && <div className="conflict-list">
+        <h3>与既有对齐的冲突（旧决定保持不变）</h3>
+        {conflicts.map((conflict, i) => <p key={i}>
+          {conflict.message}
+          <small>（段：基准 {conflict.baseSegmentIndex + 1} ↔ 另一 {conflict.otherSegmentIndex + 1}；锚点 {conflict.previousAnchorId} → {conflict.newAnchorId}）</small>
+        </p>)}
+      </div>}
       {report && <div className="cross-report">
-        <p>{report.offsetSummary}；差异 {report.diffCount} 处，证据不足 {report.unmatchedCount} 处。</p>
-        {report.segments.map((segment, i) => <small key={i}>分段 {i + 1}: offset={segment.offsetNs}ns, drift={segment.driftRate.toFixed(6)}</small>)}
+        <p>{report.offsetSummary}；差异 {report.diffCount} 处，时钟漂移 {report.driftCount} 处，证据不足 {report.unmatchedCount} 处。</p>
+        {report.segments.map((segment, i) => <small key={i}>段对（基准段 {segment.baseSegmentIndex + 1} ↔ 另一段 {segment.otherSegmentIndex + 1}）分段 {i + 1}: offset={segment.offsetNs}ns, drift={segment.driftRate.toFixed(6)}</small>)}
         {!report.identical && <ul>
           {report.diffs.map((diff, i) => <li key={i} className={'cause-' + diff.cause}>
             <strong>{diff.causeText}</strong>
             <span>{diff.detail}</span>
-            <small>可信半宽 ±{diff.confidenceHalfWidthNs}ns</small>
+            <small>
+              采集段：基准 {diff.baseSegmentIndex >= 0 ? diff.baseSegmentIndex + 1 : '—'} ↔ 另一 {diff.otherSegmentIndex >= 0 ? diff.otherSegmentIndex + 1 : '—'}
+              ；可信半宽 ±{diff.confidenceHalfWidthNs}ns
+              {diff.evidenceAnchorIds && diff.evidenceAnchorIds.length > 0 && '；对齐证据：' + diff.evidenceAnchorIds.join(', ')}
+            </small>
             <span>
               {diff.base && <button onClick={() => onOpen(base!.demo.capture.id, diff.base!)}>基准原始区间</button>}
               <button onClick={() => onOpen(base!.demo.capture.id, mappedMarker(diff))}>映射区间</button>
               {diff.other && <button onClick={() => onOpen(other!.demo.capture.id, diff.other!)}>另一采样原始区间</button>}
-              {diff.otherNativeStartNs !== undefined && <button onClick={() => onOpen(other!.demo.capture.id, { id: 'native-range', kind: 'error', startNs: diff.otherNativeStartNs!, endNs: diff.otherNativeEndNs!, channel: diff.base?.channel ?? 0, severity: 'error', label: '基准异常的可能区间' })}>反查另一采样可能区间</button>}
+              {diff.otherNativeStartNs !== undefined && <button onClick={() => onOpen(other!.demo.capture.id, { id: 'native-range', kind: 'error', startNs: diff.otherNativeStartNs!, endNs: diff.otherNativeEndNs!, channel: diff.base?.channel ?? 0, severity: 'error', label: '基准异常的可能区间（段 ' + (diff.otherSegmentIndex + 1) + '）', segmentIndex: Math.max(0, diff.otherSegmentIndex) })}>反查另一采样可能区间</button>}
             </span>
           </li>)}
         </ul>}
         <h3>锚点与排除候选</h3>
         {alignment?.anchors.map((anchor) => <details key={anchor.id} open>
-          <summary>{anchor.id}: {anchor.baseTimeNs}ns ↔ {anchor.otherTimeNs}ns，±{anchor.uncertaintyNs}ns</summary>
+          <summary>{anchor.id}: 段{anchor.baseSegmentIndex + 1} {anchor.baseTimeNs}ns ↔ 段{anchor.otherSegmentIndex + 1} {anchor.otherTimeNs}ns，±{anchor.uncertaintyNs}ns</summary>
           {candidates.filter((candidate) => candidate.anchorId === anchor.id).map((candidate) => <p key={candidate.id} className={candidate.status}>
             {candidate.status === 'accepted' ? '采纳' : '排除'}：{candidate.reason}
             {candidate.residualNs !== undefined && <span>；残差 {candidate.residualNs}ns</span>}

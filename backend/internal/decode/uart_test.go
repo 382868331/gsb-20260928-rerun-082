@@ -113,3 +113,65 @@ func TestClockAnomalyIsPreserved(t *testing.T) {
 		t.Fatalf("expected clock anomaly without a normal byte, got %#v", result.Markers)
 	}
 }
+func TestClockResetSplitsCaptureIntoSegments(t *testing.T) {
+	type edge struct {
+		at    int64
+		level uint8
+	}
+	// 同一逻辑采样中途两次重置时钟：后半段时间戳重新从较小值开始。
+	// 解码必须保留采集段，重置前后的相同时间戳是不同事件。
+	bit := int64(10000)
+	interval := int64(2500)
+	byteAt := func(value byte, start int64) []edge {
+		changes := []edge{{start, 0}}
+		for i := 0; i < 8; i++ {
+			changes = append(changes, edge{start + bit*int64(i+1), (value >> i) & 1})
+		}
+		return append(changes, edge{start + bit*9, 1})
+	}
+	render := func(events []edge, end int64) [][]uint8 {
+		rows := [][]uint8{}
+		for ts := int64(0); ts <= end; ts += interval {
+			level := uint8(1)
+			for _, c := range events {
+				if c.at <= ts+interval/2 {
+					level = c.level
+				}
+			}
+			rows = append(rows, []uint8{0, level})
+		}
+		return rows
+	}
+	seg0 := append(byteAt('A', 20000), byteAt('B', 150000)...)
+	seg1 := append(byteAt('A', 20000), byteAt('C', 150000)...)
+	seg2 := byteAt('A', 20000)
+	chunks := []model.Chunk{
+		{Index: 0, StartTime: 0, IntervalNs: interval, Levels: render(seg0, 260000)},
+		{Index: 1, StartTime: 0, IntervalNs: interval, Levels: render(seg1, 260000)},
+		{Index: 2, StartTime: 0, IntervalNs: interval, Levels: render(seg2, 260000)},
+	}
+	cfg := model.Config{ID: "cfg-reset", CaptureID: "cap", Protocol: "uart", Parameters: model.UARTParameters{Channel: 1, Baud: 100000, DataBits: 8, Parity: "none", StopBits: 1, IdleLevel: 1, ClockTolerance: 0.04}}
+	result := (&UARTDecoder{}).Decode("reset", chunks, cfg)
+	resets := 0
+	bytesPerSegment := map[int][]byte{}
+	for _, m := range result.Markers {
+		if m.Code == "clock-reset" {
+			resets++
+		}
+		if m.Kind == "byte" {
+			bytesPerSegment[m.SegmentIndex] = append(bytesPerSegment[m.SegmentIndex], *m.Value)
+		}
+	}
+	if resets != 2 {
+		t.Fatalf("clock-reset markers=%d, want 2: %+v", resets, result.Markers)
+	}
+	if len(bytesPerSegment) != 3 || len(bytesPerSegment[0]) != 2 || len(bytesPerSegment[1]) != 2 || len(bytesPerSegment[2]) != 1 {
+		t.Fatalf("bytes per segment=%v", bytesPerSegment)
+	}
+	// 三段各自的 A 都在原生 20000ns，但属于不同采集段的不同事件。
+	for segment := 0; segment < 3; segment++ {
+		if bytesPerSegment[segment][0] != 'A' {
+			t.Fatalf("segment %d first byte=%q", segment, bytesPerSegment[segment][0])
+		}
+	}
+}

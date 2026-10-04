@@ -112,6 +112,10 @@ text { fill: #9fb0c4; font-size: 12px; }
 .cross-report .cause-sampling-missing { border-color: #ffd166; }
 .cross-report .cause-protocol-parameters { border-color: #58c6ff; }
 .cross-report .cause-unmatched { border-color: #8b9bad; }
+.cross-report .cause-clock-drift { border-color: #c792ff; }
+.segment-boundary line { stroke: #c792ff; stroke-dasharray: 6 4; }
+.segment-boundary text { fill: #c792ff; font-size: 11px; }
+.conflict-list { color: #ff9d66; }
 .cross-report details { background: #0d1722; border-radius: 6px; padding: 7px 9px; }
 .cross-report .excluded { color: #ffaaa5; }
 .cross-report .accepted { color: #89e0a8; }

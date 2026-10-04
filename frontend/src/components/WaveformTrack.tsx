@@ -14,6 +14,15 @@ interface Viewport {
   nsPerPixel: number;
 }
 
+interface DisplaySegment {
+  index: number;
+  offset: number;
+  rawStart: number;
+  rawEnd: number;
+  displayStart: number;
+  displayEnd: number;
+}
+
 const WIDTH = 980;
 const ROW_HEIGHT = 108;
 
@@ -25,22 +34,46 @@ function formatNs(ns: number): string {
 
 export function WaveformTrack({ chunks, channelNames, markers, focus, resetEpoch }: Props) {
   const ordered = useMemo(() => [...chunks].sort((a, b) => a.index - b.index), [chunks]);
+  // 时钟重置把采样分成多个采集段：各段在显示轴上依次排开，
+  // 重置前后相同的时间戳落在不同段，绝不重叠成同一事件。
+  const { segments, chunkSegment } = useMemo(() => {
+    const segments: DisplaySegment[] = [];
+    const chunkSegment = new Map<string, number>();
+    let displayEnd = 0;
+    for (const chunk of ordered) {
+      if (chunk.levels.length === 0) continue;
+      const rawEnd = chunk.startTimeNs + Math.max(0, chunk.levels.length - 1) * chunk.intervalNs;
+      if (segments.length === 0 || chunk.startTimeNs < segments[segments.length - 1].rawEnd) {
+        const offset = segments.length === 0 ? 0 : displayEnd + chunk.intervalNs * 40 - chunk.startTimeNs;
+        segments.push({ index: segments.length, offset, rawStart: chunk.startTimeNs, rawEnd: chunk.startTimeNs, displayStart: chunk.startTimeNs + offset, displayEnd: chunk.startTimeNs + offset });
+      }
+      const segment = segments[segments.length - 1];
+      segment.rawEnd = Math.max(segment.rawEnd, rawEnd);
+      segment.rawStart = Math.min(segment.rawStart, chunk.startTimeNs);
+      segment.displayStart = segment.rawStart + segment.offset;
+      segment.displayEnd = segment.rawEnd + segment.offset;
+      displayEnd = Math.max(displayEnd, segment.displayEnd);
+      chunkSegment.set(chunk.id, segment.index);
+    }
+    return { segments, chunkSegment };
+  }, [ordered]);
   const span = useMemo(() => {
     if (ordered.length === 0) return { start: 0, end: 1, interval: 1 };
-    const last = ordered[ordered.length - 1];
     return {
-      start: Math.min(...ordered.map((chunk) => chunk.startTimeNs)),
-      end: last.startTimeNs + Math.max(0, last.levels.length - 1) * last.intervalNs,
+      start: 0,
+      end: Math.max(1, ...segments.map((segment) => segment.displayEnd)),
       interval: Math.min(...ordered.map((chunk) => chunk.intervalNs)),
     };
-  }, [ordered]);
+  }, [ordered, segments]);
+  const segmentOffset = (index: number | undefined) => segments[index ?? 0]?.offset ?? 0;
   const [viewport, setViewport] = useState<Viewport>(() => ({ startNs: 0, nsPerPixel: Math.max(1, span.end / WIDTH) }));
   const svgRef = useRef<SVGSVGElement>(null);
 
   useEffect(() => {
     if (!focus) return;
     const { startNs, endNs } = focus.marker;
-    const center = (startNs + endNs) / 2;
+    const offset = segmentOffset(focus.marker.segmentIndex);
+    const center = (startNs + endNs) / 2 + offset;
     const width = Math.max(endNs - startNs, span.interval) * 6;
     const nsPerPixel = Math.min(Math.max(span.interval / 8, width / WIDTH), span.end / 80);
     setViewport({ startNs: center - (nsPerPixel * WIDTH) / 2, nsPerPixel });
@@ -57,6 +90,19 @@ export function WaveformTrack({ chunks, channelNames, markers, focus, resetEpoch
 
   const timeToX = (time: number) => (time - viewport.startNs) / viewport.nsPerPixel;
   const xToTime = (x: number) => viewport.startNs + x * viewport.nsPerPixel;
+  // 刻度标签显示该位置所属采集段的原生时间。
+  const displayToRaw = (display: number) => {
+    for (const segment of segments) {
+      if (display >= segment.displayStart && display <= segment.displayEnd) {
+        return { raw: display - segment.offset, segment };
+      }
+    }
+    let nearest = segments[0];
+    for (const segment of segments) {
+      if (Math.abs(display - segment.displayEnd) < Math.abs(display - nearest.displayEnd)) nearest = segment;
+    }
+    return { raw: display - (nearest?.offset ?? 0), segment: nearest };
+  };
 
   const zoomAt = (clientX: number, factor: number) => {
     const rect = svgRef.current?.getBoundingClientRect();
@@ -77,8 +123,9 @@ export function WaveformTrack({ chunks, channelNames, markers, focus, resetEpoch
 	return channelNames.map((_, channel) => {
       const points: Array<{ x: number; y: number }> = [];
       ordered.forEach((chunk) => {
+        const offset = segmentOffset(chunkSegment.get(chunk.id));
         chunk.levels.forEach((row, sampleIndex) => {
-          const t = chunk.startTimeNs + sampleIndex * chunk.intervalNs;
+          const t = chunk.startTimeNs + sampleIndex * chunk.intervalNs + offset;
           const x = timeToX(t);
           const y = channel * ROW_HEIGHT + 72 - (row[channel] === 1 ? 38 : 10);
           const last = points[points.length - 1];
@@ -95,7 +142,10 @@ export function WaveformTrack({ chunks, channelNames, markers, focus, resetEpoch
     });
   }, [channelNames, ordered, viewport]);
 
-  const visibleMarkers = markers.filter((marker) => marker.endNs >= viewport.startNs && marker.startNs <= xToTime(WIDTH));
+  const visibleMarkers = markers.filter((marker) => {
+    const offset = segmentOffset(marker.segmentIndex);
+    return marker.endNs + offset >= viewport.startNs && marker.startNs + offset <= xToTime(WIDTH);
+  });
   const ticks = Array.from({ length: 11 }, (_, i) => xToTime((WIDTH / 10) * i));
 
   return (
@@ -122,7 +172,13 @@ export function WaveformTrack({ chunks, channelNames, markers, focus, resetEpoch
         {ticks.map((time, index) => (
           <g key={index}>
             <line x1={(WIDTH / 10) * index} y1={28} x2={(WIDTH / 10) * index} y2={ROW_HEIGHT * channelNames.length + 22} className="tick" />
-            <text x={(WIDTH / 10) * index + 4} y={18}>{formatNs(time)}</text>
+            <text x={(WIDTH / 10) * index + 4} y={18}>{formatNs(displayToRaw(time).raw)}</text>
+          </g>
+        ))}
+        {segments.filter((segment) => segment.index > 0).map((segment) => (
+          <g key={segment.index} className="segment-boundary">
+            <line x1={timeToX(segment.displayStart)} y1={24} x2={timeToX(segment.displayStart)} y2={ROW_HEIGHT * channelNames.length + 22} />
+            <text x={timeToX(segment.displayStart) + 4} y={ROW_HEIGHT * channelNames.length + 38}>段 {segment.index + 1}（时钟重置）</text>
           </g>
         ))}
         {channelNames.map((name, channel) => (
@@ -134,8 +190,9 @@ export function WaveformTrack({ chunks, channelNames, markers, focus, resetEpoch
           </g>
         ))}
         {visibleMarkers.map((marker) => {
-          const x = Math.max(0, timeToX(marker.startNs));
-          const width = Math.max(2, timeToX(marker.endNs) - x);
+          const offset = segmentOffset(marker.segmentIndex);
+          const x = Math.max(0, timeToX(marker.startNs + offset));
+          const width = Math.max(2, timeToX(marker.endNs + offset) - x);
           const y = marker.channel * ROW_HEIGHT + 30;
           return (
             <g key={marker.id} className={marker.kind === 'error' ? 'marker-error' : 'marker-byte'}>

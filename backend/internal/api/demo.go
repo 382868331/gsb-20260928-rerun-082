@@ -16,7 +16,7 @@ type change struct {
 
 func CreateDemo(st *store.Store) map[string]any {
 	captures := make([]map[string]any, 0, 2)
-	for _, name := range []string{"内置 UART 核对波形", "内置 SPI 核对波形", "跨采样人工波形 A", "跨采样人工波形 B"} {
+	for _, name := range []string{"内置 UART 核对波形", "内置 SPI 核对波形", "跨采样人工波形 A", "跨采样人工波形 B", "跨采样人工波形 C（两次时钟重置）", "跨采样人工波形 D（对照无重置）"} {
 		if capture, ok := st.FindCaptureByName(name); ok {
 			// 示例已存在：按原采样身份重开用户保存过的配置与结果，
 			// 绝不重复创建同名采样，刷新页面后仍是同一份对照。
@@ -42,11 +42,144 @@ func CreateDemo(st *store.Store) map[string]any {
 			captures = append(captures, createSPIDemo(st))
 		case "跨采样人工波形 A":
 			captures = append(captures, createCrossCapture(st, true))
-		default:
+		case "跨采样人工波形 B":
 			captures = append(captures, createCrossCapture(st, false))
+		default:
+			captures = append(captures, createResetCrossCapture(st, name == "跨采样人工波形 C（两次时钟重置）"))
 		}
 	}
 	return map[string]any{"captures": captures}
+}
+
+// createResetCrossCapture 生成时钟重置核对波形：采样 C 在采集中途两次
+// 重置时钟，时间戳重新从较小值开始，三个采集段各自携带重复 A 报文；
+// 采样 D 无重置，但有一个字节内容真实不同（C→X），且末段存在漂移。
+// 预置每段一个 A 锚点，其余重复 A 作为被排除候选保留审计。
+func createResetCrossCapture(st *store.Store, first bool) map[string]any {
+	nameC, nameD := "跨采样人工波形 C（两次时钟重置）", "跨采样人工波形 D（对照无重置）"
+	captureC, okC := st.FindCaptureByName(nameC)
+	captureD, okD := st.FindCaptureByName(nameD)
+	if okC && okD {
+		if first {
+			_, chunks, _ := st.GetCapture(captureC.ID)
+			return demoPayload(st, captureC, chunks)
+		}
+		_, chunks, _ := st.GetCapture(captureD.ID)
+		return demoPayload(st, captureD, chunks)
+	}
+	if !okC {
+		captureC = st.CreateCapture(nameC, []string{"CLK-REF", "RX"})
+	}
+	captureD = captureDOrNew(st, captureD, okD, nameD)
+
+	baud := 100000
+	interval := int64(2500)
+	bit := int64(1000000000 / baud)
+
+	type byteEvent struct {
+		value byte
+		start int64
+	}
+	// 每个采集段的时间戳都从 0 附近重新开始（时钟重置/回绕）。
+	segmentsC := [][]byteEvent{
+		{{'A', 20000}, {'B', 150000}},
+		{{'A', 30000}, {'C', 160000}},
+		{{'A', 25000}, {'B', 140000}},
+	}
+	eventsD := []byteEvent{{'A', 60000}, {'B', 190000}, {'A', 320000}, {'X', 450000}, {'A', 580000}, {'B', 710000}}
+
+	render := func(events []byteEvent, end int64) [][]uint8 {
+		changes := []change{{at: 0, level: 1}}
+		for _, event := range events {
+			changes = append(changes, change{at: event.start, level: 0})
+			for bitIndex := 0; bitIndex < 8; bitIndex++ {
+				changes = append(changes, change{at: event.start + bit*int64(bitIndex+1), level: (event.value >> bitIndex) & 1})
+			}
+			changes = append(changes, change{at: event.start + bit*9, level: 1})
+		}
+		rows := [][]uint8{}
+		for t := int64(0); t <= end; t += interval {
+			level := uint8(1)
+			for _, c := range changes {
+				if c.at <= t+interval/2 {
+					level = c.level
+				}
+			}
+			rows = append(rows, []uint8{0, level})
+		}
+		return rows
+	}
+
+	chunksC := []model.Chunk{}
+	for i, segment := range segmentsC {
+		chunksC = append(chunksC, model.Chunk{CaptureID: captureC.ID, Index: i, StartTime: 0, IntervalNs: interval, Levels: render(segment, 260000)})
+	}
+	savedC, _ := st.AddChunks(chunksC)
+	savedD, _ := st.AddChunks([]model.Chunk{{CaptureID: captureD.ID, Index: 0, StartTime: 0, IntervalNs: interval, Levels: render(eventsD, 820000)}})
+
+	makeConfig := func(capture model.Capture) model.Result {
+		cfg, _ := st.CreateConfig(model.Config{CaptureID: capture.ID, Protocol: "uart", Name: "100k 8N1 时钟重置核对", Parameters: model.UARTParameters{Channel: 1, Baud: baud, DataBits: 8, Parity: "none", StopBits: 1, IdleLevel: 1, ClockTolerance: 0.04}})
+		result, _ := st.Recalculate(cfg.ID)
+		return result
+	}
+	resultC := makeConfig(captureC)
+	resultD := makeConfig(captureD)
+
+	bytesOf := func(result model.Result, segment int, value byte) *model.Marker {
+		for i := range result.Markers {
+			m := &result.Markers[i]
+			if m.Kind == "byte" && m.SegmentIndex == segment && m.Value != nil && *m.Value == value {
+				return m
+			}
+		}
+		return nil
+	}
+	anchors := []model.AlignmentAnchor{}
+	for segment := 0; segment < 3; segment++ {
+		bm := bytesOf(resultC, segment, 'A')
+		// D 中第 segment 个 A（重复报文，按出现顺序对应同一轮）。
+		seen := 0
+		var om *model.Marker
+		for i := range resultD.Markers {
+			m := &resultD.Markers[i]
+			if m.Kind == "byte" && m.Value != nil && *m.Value == 'A' {
+				if seen == segment {
+					om = m
+					break
+				}
+				seen++
+			}
+		}
+		if bm == nil || om == nil {
+			continue
+		}
+		anchors = append(anchors, model.AlignmentAnchor{
+			ID: fmt.Sprintf("anchor-%d", segment+1), BaseMarkerID: bm.ID, OtherMarkerID: om.ID,
+			BaseTimeNs: bm.StartNs, OtherTimeNs: om.StartNs, UncertaintyNs: interval/2 + 1,
+			BaseSegmentIndex: bm.SegmentIndex, OtherSegmentIndex: om.SegmentIndex,
+		})
+	}
+	align := model.Alignment{Name: "时钟重置分段核对", BaseCaptureID: captureC.ID, OtherCaptureID: captureD.ID, BaseResultID: resultC.ID, OtherResultID: resultD.ID, Anchors: anchors, Status: alignment.StatusReady}
+	for _, a := range align.Anchors {
+		bm := findCrossMarker(resultC.Markers, a.BaseMarkerID)
+		for _, om := range resultD.Markers {
+			if om.ID != a.OtherMarkerID && sameCrossSignature(bm, om) {
+				align.ExcludedCandidates = append(align.ExcludedCandidates, model.AlignmentCandidate{ID: fmt.Sprintf("%s-excluded-%d", a.ID, len(align.ExcludedCandidates)), AnchorID: a.ID, BaseMarkerID: bm.ID, OtherMarkerID: om.ID, BaseTimeNs: bm.StartNs, OtherTimeNs: om.StartNs, Status: alignment.CandidateExcluded, Reason: "重复 A 报文的另一轮候选：段锚点明确排除，跨段跳转不进入错误的一轮"})
+			}
+		}
+	}
+	_, _ = st.SaveAlignment(align)
+	if first {
+		return demoPayload(st, captureC, savedC)
+	}
+	return demoPayload(st, captureD, savedD)
+}
+
+func captureDOrNew(st *store.Store, existing model.Capture, ok bool, name string) model.Capture {
+	if ok {
+		return existing
+	}
+	return st.CreateCapture(name, []string{"CLK-REF", "RX"})
 }
 
 func createUARTDemo(st *store.Store) map[string]any {
