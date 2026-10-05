@@ -123,3 +123,47 @@ func TestSegmentWithoutAnchorsStaysUnmapped(t *testing.T) {
 		t.Fatal("segment 0 must map through its anchor")
 	}
 }
+
+// 人工确认跨采集段的先后关系后，首尾逆序（较早段事件对到另一采样末尾、
+// 末段事件对到其开头）必须被拒绝，并指出冲突经过的锚点与段。
+func TestBuildRejectsReversedOrderAcrossSegments(t *testing.T) {
+	base, other := resetChunks()
+	align := model.Alignment{Anchors: []model.AlignmentAnchor{
+		anchor("first", 0, 0, 10000, 700000), // 第一段事件对到单段另一采样的末尾
+		anchor("last", 2, 0, 20000, 50000),   // 末段事件对到其开头：首尾逆序
+	}}
+	_, _, err := Build(align, base, other)
+	var conflictErr *ConflictError
+	if !errors.As(err, &conflictErr) {
+		t.Fatalf("err=%v, want ConflictError", err)
+	}
+	if len(conflictErr.Conflicts) != 1 {
+		t.Fatalf("conflicts=%+v", conflictErr.Conflicts)
+	}
+	conflict := conflictErr.Conflicts[0]
+	if conflict.Kind != "cross-segment-ordering" {
+		t.Fatalf("kind=%q, want cross-segment-ordering", conflict.Kind)
+	}
+	if !strings.Contains(conflict.Message, "first") || !strings.Contains(conflict.Message, "last") {
+		t.Fatalf("conflict must name both anchors: %s", conflict.Message)
+	}
+	if !strings.Contains(conflict.Message, "段 1") || !strings.Contains(conflict.Message, "段 3") {
+		t.Fatalf("conflict must name traversed segments: %s", conflict.Message)
+	}
+}
+
+func TestConsistentWithAnchorOrderKeepsEvidencedSideOnly(t *testing.T) {
+	anchors := []model.AlignmentAnchor{anchor("a1", 1, 0, 10000, 300000)}
+	// 同一另一轮次（同段同时间一侧无方向证据）不据此排除：保留歧义。
+	if !ConsistentWithAnchorOrder(anchors, 0, 10000, 0, 300000) {
+		t.Fatal("same other time has no ordering evidence and must stay ambiguous")
+	}
+	// 更早基准段却对到更晚另一时间：跨段逆序，排除。
+	if ConsistentWithAnchorOrder(anchors, 0, 10000, 0, 400000) {
+		t.Fatal("reversed cross-segment order must be rejected")
+	}
+	// 更早基准段对更早另一时间：一致。
+	if !ConsistentWithAnchorOrder(anchors, 0, 10000, 0, 200000) {
+		t.Fatal("consistent ordering must pass")
+	}
+}

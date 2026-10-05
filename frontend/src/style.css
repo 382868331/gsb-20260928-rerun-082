@@ -116,6 +116,9 @@ text { fill: #9fb0c4; font-size: 12px; }
 .segment-boundary line { stroke: #c792ff; stroke-dasharray: 6 4; }
 .segment-boundary text { fill: #c792ff; font-size: 11px; }
 .conflict-list { color: #ff9d66; }
+.saved-comparisons { display: grid; gap: 6px; margin-top: 10px; padding: 10px; background: #0d1722; border-radius: 8px; }
+.saved-comparison { text-align: left; background: transparent; border: 1px solid #24364c; border-radius: 6px; padding: 7px 10px; cursor: pointer; color: inherit; }
+.saved-comparison:hover { border-color: #67d2a5; }
 .cross-report details { background: #0d1722; border-radius: 6px; padding: 7px 9px; }
 .cross-report .excluded { color: #ffaaa5; }
 .cross-report .accepted { color: #89e0a8; }

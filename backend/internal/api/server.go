@@ -149,6 +149,20 @@ func findCrossAlignmentConflicts(existing []model.Alignment, next model.Alignmen
 				sameBase := na.BaseMarkerID == pa.BaseMarkerID
 				sameOther := na.OtherMarkerID == pa.OtherMarkerID
 				if sameBase == sameOther {
+					// 不同事件之间还必须保持跨采集段先后一致：新锚点不能把更早段
+					// 的事件对到另一采样更晚位置，与旧锚点首尾逆序。
+					if sameBase || sameOther || alignment.AnchorsOrderConsistent(na, pa) {
+						continue
+					}
+					conflicts = append(conflicts, model.AlignmentConflict{
+						Kind:                "cross-segment-ordering",
+						Message:             fmt.Sprintf("新锚点 %s（基准段 %d 内 %d ns ↔ 另一段 %d 内 %d ns）与对齐 %s 的锚点 %s（基准段 %d 内 %d ns ↔ 另一段 %d 内 %d ns）跨采集段先后关系矛盾：首尾逆序；旧对齐保持不变，本次修订另存为新比较", na.ID, na.BaseSegmentIndex+1, na.BaseTimeNs, na.OtherSegmentIndex+1, na.OtherTimeNs, prev.ID, pa.ID, pa.BaseSegmentIndex+1, pa.BaseTimeNs, pa.OtherSegmentIndex+1, pa.OtherTimeNs),
+						PreviousAlignmentID: prev.ID,
+						PreviousAnchorID:    pa.ID,
+						NewAnchorID:         na.ID,
+						BaseSegmentIndex:    na.BaseSegmentIndex,
+						OtherSegmentIndex:   na.OtherSegmentIndex,
+					})
 					continue
 				}
 				conflicts = append(conflicts, model.AlignmentConflict{
@@ -173,6 +187,10 @@ func buildCandidates(align model.Alignment, mapping alignment.Mapping, baseMarke
 		bm, _ := findMarker(baseMarkers, a.BaseMarkerID)
 		for _, om := range otherMarkers {
 			if om.ID == a.OtherMarkerID || !sameSignature(&bm, &om) {
+				continue
+			}
+			if !alignment.ConsistentWithAnchorOrder(align.Anchors, bm.SegmentIndex, bm.StartNs, om.SegmentIndex, om.StartNs) {
+				out = append(out, model.AlignmentCandidate{ID: fmt.Sprintf("%s-excluded-%d", a.ID, len(out)), AnchorID: a.ID, BaseMarkerID: bm.ID, OtherMarkerID: om.ID, BaseTimeNs: bm.StartNs, OtherTimeNs: om.StartNs, Status: alignment.CandidateExcluded, Reason: fmt.Sprintf("重复报文候选与已确认锚点跨采集段先后关系矛盾：基准段 %d 与另一段 %d 首尾逆序，不能把较早段事件对到末尾、末段事件对到开头", bm.SegmentIndex+1, om.SegmentIndex+1)})
 				continue
 			}
 			iv, ok := mapping.MapInterval(om.SegmentIndex, om.StartNs, om.EndNs, a.UncertaintyNs)

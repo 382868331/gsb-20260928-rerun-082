@@ -216,34 +216,100 @@ func (p PairMapping) otherDomain(baseSegments []model.CaptureSegment) (int64, in
 	return lo, hi
 }
 
-// orderingConflicts 检查同一采集段对内的共同事件先后关系：另一采样时间
-// 递增时基准时间也必须严格递增，否则说明把重复报文的不同轮次连错了，
-// 或把重置前后的相同时间戳当成了同一事件。返回的冲突指明锚点和段。
+// orderingConflicts 检查锚点的全局先后关系。采集段按真实发生顺序编号
+// （段索引递增即更晚发生，时钟重置只重置段内时间戳而不改变段顺序），
+// 因此任意两个锚点在基准侧（段号, 段内时间）与另一侧（段号, 段内时间）
+// 的先后次序必须一致：
+//   - 同一采集段对内：另一采样时间递增时基准时间必须严格递增；
+//   - 跨采集段对：一段的事件不可能对到另一段的末尾，同时更晚段的事件
+//     对到其开头（首尾逆序）。
+//
+// 冲突指明经过的两个锚点及其所在段，避免把第一段事件连到另一采样末尾、
+// 末段事件连到其开头这类互相矛盾的对应静默接受。
 func orderingConflicts(anchors []model.AlignmentAnchor) []model.AlignmentConflict {
-	type pairKey struct{ base, other int }
-	groups := map[pairKey][]model.AlignmentAnchor{}
-	for _, a := range anchors {
-		key := pairKey{a.BaseSegmentIndex, a.OtherSegmentIndex}
-		groups[key] = append(groups[key], a)
-	}
 	conflicts := []model.AlignmentConflict{}
-	for key, group := range groups {
-		sort.SliceStable(group, func(i, j int) bool { return group[i].OtherTimeNs < group[j].OtherTimeNs })
-		for i := 1; i < len(group); i++ {
-			prev, cur := group[i-1], group[i]
-			if cur.OtherTimeNs == prev.OtherTimeNs || cur.BaseTimeNs <= prev.BaseTimeNs {
-				conflicts = append(conflicts, model.AlignmentConflict{
-					Kind:              "anchor-ordering",
-					Message:           fmt.Sprintf("锚点 %s 与 %s 在采集段对（基准段 %d ↔ 另一段 %d）内先后关系矛盾：共同事件不可能倒序，请确认是否把重复报文的不同轮次连错", prev.ID, cur.ID, key.base, key.other),
-					PreviousAnchorID:  prev.ID,
-					NewAnchorID:       cur.ID,
-					BaseSegmentIndex:  key.base,
-					OtherSegmentIndex: key.other,
-				})
+	for i := 0; i < len(anchors); i++ {
+		for j := i + 1; j < len(anchors); j++ {
+			a, b := anchors[i], anchors[j]
+			baseCmp := compareAnchorPosition(a.BaseSegmentIndex, a.BaseTimeNs, b.BaseSegmentIndex, b.BaseTimeNs)
+			otherCmp := compareAnchorPosition(a.OtherSegmentIndex, a.OtherTimeNs, b.OtherSegmentIndex, b.OtherTimeNs)
+			samePair := a.BaseSegmentIndex == b.BaseSegmentIndex && a.OtherSegmentIndex == b.OtherSegmentIndex
+			// 同一段对内不允许两个锚点共用同一端（重复确认同一事件）。
+			if samePair && (baseCmp == 0 || otherCmp == 0) {
+				conflicts = append(conflicts, crossSegmentConflict(a, b))
+			}
+			if baseCmp != 0 && otherCmp != 0 && baseCmp != otherCmp {
+				conflicts = append(conflicts, crossSegmentConflict(a, b))
 			}
 		}
 	}
 	return conflicts
+}
+
+// compareAnchorPosition 按（采集段索引, 段内时间）比较两个锚点端的先后：
+// 先跨段排序（时钟重置分开的段按发生顺序编号），同段再比段内时间。
+func compareAnchorPosition(segmentA int, timeA int64, segmentB int, timeB int64) int {
+	if segmentA != segmentB {
+		if segmentA < segmentB {
+			return -1
+		}
+		return 1
+	}
+	if timeA < timeB {
+		return -1
+	}
+	if timeA > timeB {
+		return 1
+	}
+	return 0
+}
+
+func crossSegmentConflict(a, b model.AlignmentAnchor) model.AlignmentConflict {
+	withinPair := a.BaseSegmentIndex == b.BaseSegmentIndex && a.OtherSegmentIndex == b.OtherSegmentIndex
+	kind := "cross-segment-ordering"
+	message := fmt.Sprintf(
+		"锚点 %s 与 %s 跨采集段先后关系矛盾：%s（基准段 %d 内 %d ns）与 %s（基准段 %d 内 %d ns）的先后，与另一段 %d 内 %d ns、%d 内 %d ns 的先后相反；较早采集段的事件不可能对到另一采样末尾、更晚段事件对到其开头，请确认是否把重复报文的不同轮次连错",
+		a.ID, b.ID,
+		a.ID, a.BaseSegmentIndex+1, a.BaseTimeNs, b.ID, b.BaseSegmentIndex+1, b.BaseTimeNs,
+		a.OtherSegmentIndex+1, a.OtherTimeNs, b.OtherSegmentIndex+1, b.OtherTimeNs,
+	)
+	if withinPair {
+		kind = "anchor-ordering"
+		message = fmt.Sprintf("锚点 %s 与 %s 在采集段对（基准段 %d ↔ 另一段 %d）内先后关系矛盾：共同事件不可能倒序，请确认是否把重复报文的不同轮次连错", a.ID, b.ID, a.BaseSegmentIndex, a.OtherSegmentIndex)
+	}
+	return model.AlignmentConflict{
+		Kind:              kind,
+		Message:           message,
+		PreviousAnchorID:  a.ID,
+		NewAnchorID:       b.ID,
+		BaseSegmentIndex:  a.BaseSegmentIndex,
+		OtherSegmentIndex: a.OtherSegmentIndex,
+		OtherAnchorID:     b.ID,
+	}
+}
+
+// ConsistentWithAnchorOrder 报告一个候选对应（候选基准事件 ↔ 另一采样事件）
+// 是否与已确认锚点的全局（段号, 段内时间）先后关系一致。跨段顺序与段内
+// 锚点共同约束候选；两端都严格落在同一侧（同为前或同为后）时才算冲突，
+// 没有证据的方向保持中立，不据此强行排除或采纳。
+func ConsistentWithAnchorOrder(anchors []model.AlignmentAnchor, candidateBaseSeg int, candidateBaseTime int64, candidateOtherSeg int, candidateOtherTime int64) bool {
+	for _, a := range anchors {
+		baseCmp := compareAnchorPosition(candidateBaseSeg, candidateBaseTime, a.BaseSegmentIndex, a.BaseTimeNs)
+		otherCmp := compareAnchorPosition(candidateOtherSeg, candidateOtherTime, a.OtherSegmentIndex, a.OtherTimeNs)
+		if baseCmp != 0 && otherCmp != 0 && baseCmp != otherCmp {
+			return false
+		}
+	}
+	return true
+}
+
+// AnchorsOrderConsistent 报告两组已确认对应是否保持全局先后一致：
+// 用于比较新旧对齐——新锚点若把更早段的事件连到另一采样更晚的位置，
+// 同时旧锚点相反，则与旧决定矛盾，旧对齐必须保持不变。
+func AnchorsOrderConsistent(a, b model.AlignmentAnchor) bool {
+	baseCmp := compareAnchorPosition(a.BaseSegmentIndex, a.BaseTimeNs, b.BaseSegmentIndex, b.BaseTimeNs)
+	otherCmp := compareAnchorPosition(a.OtherSegmentIndex, a.OtherTimeNs, b.OtherSegmentIndex, b.OtherTimeNs)
+	return baseCmp == 0 || otherCmp == 0 || baseCmp == otherCmp
 }
 
 func defaultUncertainty(baseChunks, otherChunks []model.Chunk) int64 {

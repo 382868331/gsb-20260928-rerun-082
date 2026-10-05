@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import type { Alignment, AlignmentConflict, CrossDiffReport, DemoCapture, Marker } from '../types';
 
@@ -30,6 +30,20 @@ export function CrossAlignmentPanel({ demos, onOpen }: Props) {
   const [conflicts, setConflicts] = useState<AlignmentConflict[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [savedComparisons, setSavedComparisons] = useState<Alignment[]>([]);
+
+  // 已保存的比较（锚点、被排除候选与差异解释）持久化在服务端；
+  // 刷新页面或服务重启后仍可从同一对齐 ID 返回同一组采集段，
+  // 不会跳入另一轮同名时间区间。
+  const refreshSaved = async () => {
+    try {
+      setSavedComparisons(await api.alignments());
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  useEffect(() => { void refreshSaved(); }, []);
 
   const base = resultOf(demos, baseResultId);
   const other = resultOf(demos, otherResultId);
@@ -47,6 +61,7 @@ export function CrossAlignmentPanel({ demos, onOpen }: Props) {
       setAlignment(saved.alignment);
       setConflicts(saved.conflicts ?? []);
       setReport(await api.crossDiff(saved.alignment.id));
+      await refreshSaved();
     } catch (err) {
       setError(String(err));
     } finally {
@@ -66,6 +81,26 @@ export function CrossAlignmentPanel({ demos, onOpen }: Props) {
   });
 
   const candidates = useMemo(() => alignment?.excludedCandidates ?? [], [alignment]);
+
+  // 重开一份已保存比较：恢复两端结果版本、原始锚点选择与差异解释，
+  // 映射按持久化的锚点重算，因此仍指向同一组采集段和同一轮重复报文。
+  const reopen = async (item: Alignment) => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      const full = await api.alignment(item.id);
+      setBaseResultId(full.baseResultId);
+      setOtherResultId(full.otherResultId);
+      setDrafts(full.anchors.map((anchor) => ({ baseMarkerId: anchor.baseMarkerId, otherMarkerId: anchor.otherMarkerId })));
+      setConflicts([]);
+      setAlignment(full);
+      setReport(await api.crossDiff(full.id));
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <section className="panel cross-panel">
@@ -98,6 +133,12 @@ export function CrossAlignmentPanel({ demos, onOpen }: Props) {
         <button onClick={() => setDrafts((items) => [...items, { baseMarkerId: '', otherMarkerId: '' }])}>增加共同事件</button>
       </div>}
       <button disabled={busy || !canAlign} onClick={align}>{busy ? '对齐中…' : '建立新的对齐比较'}</button>
+      {savedComparisons.length > 0 && <div className="saved-comparisons">
+        <h3>已保存的比较（刷新/重启后可重开）</h3>
+        {savedComparisons.map((item) => <button key={item.id} className="saved-comparison" disabled={busy} onClick={() => reopen(item)}>
+          {item.name} · 锚点 {item.anchors.length} 个 · {new Date(item.createdAt).toLocaleString()}
+        </button>)}
+      </div>}
       {error && <p className="error-text">{error}</p>}
       {conflicts.length > 0 && <div className="conflict-list">
         <h3>与既有对齐的冲突（旧决定保持不变）</h3>

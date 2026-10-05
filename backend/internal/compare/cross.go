@@ -137,7 +137,11 @@ func CrossResults(align model.Alignment, mapping alignment.Mapping, base, other 
 				continue
 			}
 			iv := alignment.Interval{Start: bm.StartNs, End: bm.EndNs, Half: uncertaintyFor(bm, baseChunks)}
-			if iv.Overlaps(mapped) {
+			// 跨采集段先后关系与段内锚点共同约束候选：与任何已确认锚点
+			// 全局（段号, 段内时间）次序矛盾的候选不能采纳，避免把较早段
+			// 的重复报文对到另一轮末尾、末段对到开头。没有锚点证据的
+			// 方向不强行排除，仍可能留下多个候选（保留歧义）。
+			if iv.Overlaps(mapped) && alignment.ConsistentWithAnchorOrder(align.Anchors, bm.SegmentIndex, (bm.StartNs+bm.EndNs)/2, om.SegmentIndex, center) {
 				candidates = append(candidates, bi)
 			}
 		}

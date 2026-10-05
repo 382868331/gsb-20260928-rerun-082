@@ -266,4 +266,80 @@ func TestAlignmentRevisionReportsConflictAndKeepsOldDecision(t *testing.T) {
 	if len(st.ListAlignments()) != before+1 {
 		t.Fatalf("revision must create a new alignment id, old one untouched")
 	}
+
+	// 跨采集段首尾逆序的修订：第一段事件对到另一采样末尾、末段事件
+	// 对到其开头，必须指出跨段顺序冲突，旧对齐保持不可变。
+	var seg2Base, firstOther, lastOther string
+	for _, m := range base.Markers {
+		if m.Kind == "byte" && m.SegmentIndex == 2 && seg2Base == "" {
+			seg2Base = m.ID
+		}
+	}
+	for _, m := range other.Markers {
+		if m.Kind != "byte" {
+			continue
+		}
+		if firstOther == "" {
+			firstOther = m.ID
+		}
+		lastOther = m.ID
+	}
+	// 新锚点本身跨段逆序：直接 409，不保存。
+	reversed := fmt.Sprintf("{\"name\":\"首尾逆序\",\"baseResultId\":%q,\"otherResultId\":%q,\"anchors\":["+
+		"{\"baseMarkerId\":%q,\"otherMarkerId\":%q},{\"baseMarkerId\":%q,\"otherMarkerId\":%q}]}",
+		baseResultID, otherID, baseBytes[0], lastOther, seg2Base, firstOther)
+	if rec := post(reversed); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "cross-segment-ordering") {
+		t.Fatalf("reversed cross-segment ordering=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(st.ListAlignments()) != before+1 {
+		t.Fatalf("reversed ordering must not be saved or overwrite the old decision")
+	}
+}
+
+// 已保存的比较可以在刷新/服务重启后通过对齐 ID 重新打开：
+// 返回同一组锚点、被排除候选与差异解释。
+func TestSavedAlignmentCanBeListedAndReopened(t *testing.T) {
+	dataPath := filepath.Join(t.TempDir(), "logicstation.json")
+	st, err := store.NewPersistent(dataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(st, "")
+	demoReq := httptest.NewRequest(http.MethodPost, "/api/demo", strings.NewReader("{}"))
+	demoRec := httptest.NewRecorder()
+	handler.ServeHTTP(demoRec, demoReq)
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/alignments", nil)
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list=%d", listRec.Code)
+	}
+	var list []struct {
+		ID      string `json:"id"`
+		Anchors []any  `json:"anchors"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &list); err != nil || len(list) < 2 {
+		t.Fatalf("saved alignments=%s err=%v", listRec.Body.String(), err)
+	}
+	id := list[len(list)-1].ID
+
+	// 重启后按同一 ID 取回，锚点与差异解释不变。
+	reopenedStore, err := store.NewPersistent(dataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopenedHandler := NewServer(reopenedStore, "")
+	getReq := httptest.NewRequest(http.MethodGet, "/api/alignments/"+id, nil)
+	getRec := httptest.NewRecorder()
+	reopenedHandler.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK || !strings.Contains(getRec.Body.String(), id) {
+		t.Fatalf("reopen alignment=%d body=%s", getRec.Code, getRec.Body.String())
+	}
+	diffReq := httptest.NewRequest(http.MethodPost, "/api/results/cross-diff", strings.NewReader(fmt.Sprintf("{\"alignmentId\":%q}", id)))
+	diffRec := httptest.NewRecorder()
+	reopenedHandler.ServeHTTP(diffRec, diffReq)
+	if diffRec.Code != http.StatusOK || !strings.Contains(diffRec.Body.String(), id) {
+		t.Fatalf("reopen cross-diff=%d body=%s", diffRec.Code, diffRec.Body.String())
+	}
 }

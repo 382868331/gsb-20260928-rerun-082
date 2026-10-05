@@ -35,4 +35,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ alignmentId }),
     }),
+  alignments: () => request<Alignment[]>('/api/alignments'),
+  alignment: (id: string) => request<Alignment>(`/api/alignments/${id}`),
 };
