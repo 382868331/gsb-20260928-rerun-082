@@ -61,6 +61,30 @@ type matched struct {
 	mapped alignment.Interval
 }
 
+// satisfiesAnchorOrdering 判断把候选基准事件与另一采样事件配对，是否与全部
+// 已确认锚点的先后关系一致。跨采集段顺序与段内锚点共同约束：
+// 候选与锚点在两侧的采集顺序（先按采集段、段内再按时间）必须同向，
+// 且不能与锚点复用同一事件。任何一条矛盾都不允许该候选。
+func satisfiesAnchorOrdering(anchors []model.AlignmentAnchor, baseCandidate, otherCandidate *model.Marker) bool {
+	cb := baseCandidate.SegmentIndex
+	co := otherCandidate.SegmentIndex
+	for _, a := range anchors {
+		if a.BaseMarkerID == baseCandidate.ID || a.OtherMarkerID == otherCandidate.ID {
+			continue
+		}
+		// 相对于锚点的基准侧顺序。
+		beforeBase := cb < a.BaseSegmentIndex || (cb == a.BaseSegmentIndex && baseCandidate.StartNs < a.BaseTimeNs)
+		afterBase := cb > a.BaseSegmentIndex || (cb == a.BaseSegmentIndex && baseCandidate.StartNs > a.BaseTimeNs)
+		// 相对于锚点的另一采样侧顺序。
+		beforeOther := co < a.OtherSegmentIndex || (co == a.OtherSegmentIndex && otherCandidate.StartNs < a.OtherTimeNs)
+		afterOther := co > a.OtherSegmentIndex || (co == a.OtherSegmentIndex && otherCandidate.StartNs > a.OtherTimeNs)
+		if beforeBase != beforeOther || afterBase != afterOther {
+			return false
+		}
+	}
+	return true
+}
+
 func CrossResults(align model.Alignment, mapping alignment.Mapping, base, other model.Result, baseCfg, otherCfg model.Config, baseChunks, otherChunks []model.Chunk) CrossReport {
 	report := CrossReport{
 		AlignmentID: align.ID, BaseResultID: base.ID, OtherResultID: other.ID, Status: align.Status,
@@ -137,12 +161,24 @@ func CrossResults(align model.Alignment, mapping alignment.Mapping, base, other 
 				continue
 			}
 			iv := alignment.Interval{Start: bm.StartNs, End: bm.EndNs, Half: uncertaintyFor(bm, baseChunks)}
-			if iv.Overlaps(mapped) {
+			// 跨采集段顺序与段内锚点先后关系共同约束候选：落入可信区间但
+			// 与任何已确认锚点的先后关系矛盾（首尾逆序/重复报文错轮）的候选
+			// 必须剔除，不能用时间距离把错轮同名事件强行对上。
+			if iv.Overlaps(mapped) && satisfiesAnchorOrdering(align.Anchors, bm, om) {
 				candidates = append(candidates, bi)
 			}
 		}
 		if len(candidates) == 1 && !anchoredBase[base.Markers[candidates[0]].ID] {
 			pairs = append(pairs, matched{base: &base.Markers[candidates[0]], other: om, mapped: mapped})
+		} else if len(candidates) == 0 {
+			usedOther[oi] = true
+			report.Diffs = append(report.Diffs, CrossMarkerDiff{
+				Other: om, MappedStartNs: mapped.Start, MappedEndNs: mapped.End, ConfidenceHalfNs: mapped.Half,
+				BaseSegmentIndex: pair.BaseSegmentIndex, OtherSegmentIndex: om.SegmentIndex,
+				EvidenceAnchorIDs: pair.AnchorIDs,
+				Cause:             CauseUnmatched, CauseText: "证据不足：可信范围内的候选与已确认锚点的跨段/段内先后关系矛盾",
+				Detail: "跨采集段顺序与段内锚点共同约束候选；不能把第一段事件对到另一采样末尾或末段对到开头，请补充共同事件，缺证据时保留歧义",
+			})
 		} else if len(candidates) > 1 {
 			for _, id := range candidates {
 				ambiguous[id] = true

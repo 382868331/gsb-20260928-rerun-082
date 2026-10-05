@@ -137,12 +137,40 @@ func (s *Server) createAlignment(w http.ResponseWriter, r *http.Request) {
 
 // findCrossAlignmentConflicts 比较新对齐与此前保存的同一结果对对齐：
 // 同一基准事件被连到另一采样的不同事件（或反之）即为矛盾，
-// 报告冲突经过的锚点和采集段，旧对齐本身不被修改。
+// 报告冲突经过的锚点和采集段，旧对齐本身不被修改。新锚点与旧锚点跨采集段
+// 首尾逆序（第一段事件对到另一采样末尾、末段事件对到开头）同样构成矛盾，
+// 复用 alignment 的统一顺序校验，绝不直接用新关系覆盖旧决定。
 func findCrossAlignmentConflicts(existing []model.Alignment, next model.Alignment) []model.AlignmentConflict {
 	conflicts := []model.AlignmentConflict{}
 	for _, prev := range existing {
 		if prev.ID == next.ID || prev.BaseResultID != next.BaseResultID || prev.OtherResultID != next.OtherResultID {
 			continue
+		}
+		// 把旧对齐锚点与本次锚点合并，做段内 + 跨段统一顺序校验。
+		// 冲突中涉及新锚点（按基准/另一标记对识别，新旧对齐的锚点 ID
+		// 可能同名）的才报告为修订冲突；纯旧锚点之间不可能冲突
+		//（旧对齐建立时已经校验通过）。
+		type markerPair struct{ base, other string }
+		newPairs := map[markerPair]bool{}
+		for _, na := range next.Anchors {
+			newPairs[markerPair{na.BaseMarkerID, na.OtherMarkerID}] = true
+		}
+		isNew := func(a model.AlignmentAnchor) bool { return newPairs[markerPair{a.BaseMarkerID, a.OtherMarkerID}] }
+		union := append(append([]model.AlignmentAnchor{}, prev.Anchors...), next.Anchors...)
+		for _, c := range append(alignment.OrderingConflicts(union), alignment.GlobalOrderingConflicts(union)...) {
+			var conflicting model.AlignmentAnchor
+			if a, ok := findAnchorByID(union, c.NewAnchorID); ok && isNew(a) {
+				conflicting = a
+			} else if a, ok := findAnchorByID(union, c.PreviousAnchorID); ok && isNew(a) {
+				conflicting = a
+			} else {
+				continue
+			}
+			c.Kind = "contradicts-saved-alignment"
+			c.PreviousAlignmentID = prev.ID
+			c.NewAnchorID = conflicting.ID
+			c.Message = fmt.Sprintf("与已保存对齐 %s 的先后关系矛盾（旧对齐保持不变，本次修订另存为新比较）：%s", prev.ID, c.Message)
+			conflicts = append(conflicts, c)
 		}
 		for _, na := range next.Anchors {
 			for _, pa := range prev.Anchors {
@@ -212,6 +240,15 @@ func findMarker(markers []model.Marker, id string) (model.Marker, bool) {
 		}
 	}
 	return model.Marker{}, false
+}
+
+func findAnchorByID(anchors []model.AlignmentAnchor, id string) (model.AlignmentAnchor, bool) {
+	for _, a := range anchors {
+		if a.ID == id {
+			return a, true
+		}
+	}
+	return model.AlignmentAnchor{}, false
 }
 
 func (s *Server) getAlignment(w http.ResponseWriter, r *http.Request) {

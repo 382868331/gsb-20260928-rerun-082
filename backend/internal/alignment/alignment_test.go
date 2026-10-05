@@ -123,3 +123,48 @@ func TestSegmentWithoutAnchorsStaysUnmapped(t *testing.T) {
 		t.Fatal("segment 0 must map through its anchor")
 	}
 }
+
+// 人工确认跨采集段顺序后，首尾逆序（第一段事件对到另一采样末尾、末段
+// 事件对到开头）即使在各自段对内单调，也必须被拒绝，并指出经过的段与锚点。
+func TestBuildRejectsCrossSegmentReversedOrdering(t *testing.T) {
+	base, other := resetChunks()
+	align := model.Alignment{Anchors: []model.AlignmentAnchor{
+		anchor("a1", 0, 0, 10000, 700000), // 基准第一段 → 另一采样末尾
+		anchor("a2", 1, 0, 20000, 350000),
+		anchor("a3", 2, 0, 15000, 50000), // 基准末段 → 另一采样开头
+	}}
+	_, _, err := Build(align, base, other)
+	var conflictErr *ConflictError
+	if !errors.As(err, &conflictErr) {
+		t.Fatalf("err=%v, want ConflictError", err)
+	}
+	var found bool
+	named := ""
+	for _, c := range conflictErr.Conflicts {
+		if c.Kind != "cross-segment-ordering" {
+			continue
+		}
+		found = true
+		named += "|" + c.PreviousAnchorID + "," + c.NewAnchorID
+		if c.BaseSegmentIndex < 1 || c.OtherSegmentIndex != 0 {
+			t.Fatalf("conflict must name traversed segments: %+v", c)
+		}
+	}
+	if !found {
+		t.Fatalf("expected cross-segment-ordering conflict: %+v", conflictErr.Conflicts)
+	}
+	// 冲突必须指出经过的全部锚点（a1→a2、a2→a3 两段逆序）。
+	if !strings.Contains(named, "a1") || !strings.Contains(named, "a3") {
+		t.Fatalf("conflicts must name traversed anchors a1..a3: %s", named)
+	}
+
+	// 正向顺序（第一段→早，末段→晚）应被接受。
+	forward := model.Alignment{Anchors: []model.AlignmentAnchor{
+		anchor("f1", 0, 0, 10000, 50000),
+		anchor("f2", 1, 0, 20000, 350000),
+		anchor("f3", 2, 0, 15000, 700000),
+	}}
+	if _, _, err := Build(forward, base, other); err != nil {
+		t.Fatalf("forward cross-segment ordering must be accepted: %v", err)
+	}
+}

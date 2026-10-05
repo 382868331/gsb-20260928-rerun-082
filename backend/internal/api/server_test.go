@@ -267,3 +267,63 @@ func TestAlignmentRevisionReportsConflictAndKeepsOldDecision(t *testing.T) {
 		t.Fatalf("revision must create a new alignment id, old one untouched")
 	}
 }
+
+// 跨采集段首尾逆序的修订（第一段事件对到另一采样末尾、末段事件对到开头）
+// 必须报告与已保存对齐的冲突，旧对齐决定保持不变，不能用新关系覆盖。
+func TestAlignmentCrossSegmentReversedRevisionKeepsOldDecision(t *testing.T) {
+	st := store.New()
+	handler := NewServer(st, "")
+	alignmentID, baseResultID := demoResetAlignment(t, handler, st)
+	var otherID string
+	for _, a := range st.ListAlignments() {
+		if strings.Contains(a.Name, "时钟重置") {
+			otherID = a.OtherResultID
+		}
+	}
+	base, _ := st.GetResult(baseResultID)
+	other, _ := st.GetResult(otherID)
+	var baseC0, baseC2, otherFirstA, otherLastA string
+	firstASeen := 0
+	for _, m := range base.Markers {
+		if m.Kind != "byte" || m.Value == nil || *m.Value != 'A' {
+			continue
+		}
+		switch m.SegmentIndex {
+		case 0:
+			baseC0 = m.ID
+		case 2:
+			baseC2 = m.ID
+		}
+	}
+	for _, m := range other.Markers {
+		if m.Kind != "byte" || m.Value == nil || *m.Value != 'A' {
+			continue
+		}
+		if firstASeen == 0 {
+			otherFirstA = m.ID
+		}
+		otherLastA = m.ID
+		firstASeen++
+	}
+	if baseC0 == "" || baseC2 == "" || otherFirstA == "" || otherLastA == "" {
+		t.Fatalf("missing markers: %q %q %q %q", baseC0, baseC2, otherFirstA, otherLastA)
+	}
+	// 修订本身内部不矛盾（只改段0 的 A：从第一轮改到最后一轮），但与已
+	// 保存对齐中段2 的 A→最后一轮构成跨段首尾逆序：必须指出冲突且旧决定保留。
+	body := fmt.Sprintf("{\"name\":\"跨段逆序修订\",\"baseResultId\":%q,\"otherResultId\":%q,\"anchors\":["+
+		"{\"baseMarkerId\":%q,\"otherMarkerId\":%q}]}",
+		baseResultID, otherID, baseC0, otherLastA)
+	req := httptest.NewRequest(http.MethodPost, "/api/alignments", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revision=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "contradicts-saved-alignment") {
+		t.Fatalf("cross-segment reversed revision must contradict saved alignment: %s", rec.Body.String())
+	}
+	old, ok := st.GetAlignment(alignmentID)
+	if !ok || len(old.Anchors) != 3 {
+		t.Fatalf("old alignment decision must remain intact: ok=%v %+v", ok, old)
+	}
+}

@@ -131,7 +131,11 @@ func Build(in model.Alignment, baseChunks, otherChunks []model.Chunk) (model.Ali
 			out.Anchors[i].UncertaintyNs = defaultUncertainty(baseChunks, otherChunks)
 		}
 	}
-	if conflicts := orderingConflicts(out.Anchors); len(conflicts) > 0 {
+	// 段内锚点先后顺序与跨采集段顺序共同约束候选：任何一层倒序都拒绝，
+	// 冲突指出经过的采集段与锚点。
+	conflicts := OrderingConflicts(out.Anchors)
+	conflicts = append(conflicts, GlobalOrderingConflicts(out.Anchors)...)
+	if len(conflicts) > 0 {
 		return model.Alignment{}, Mapping{}, &ConflictError{Conflicts: conflicts}
 	}
 
@@ -219,7 +223,9 @@ func (p PairMapping) otherDomain(baseSegments []model.CaptureSegment) (int64, in
 // orderingConflicts 检查同一采集段对内的共同事件先后关系：另一采样时间
 // 递增时基准时间也必须严格递增，否则说明把重复报文的不同轮次连错了，
 // 或把重置前后的相同时间戳当成了同一事件。返回的冲突指明锚点和段。
-func orderingConflicts(anchors []model.AlignmentAnchor) []model.AlignmentConflict {
+// OrderingConflicts 是段对内锚点先后关系校验的导出版本，供 API 层把
+// 待修订锚点与旧对齐锚点合并后复用同一套矛盾判定。
+func OrderingConflicts(anchors []model.AlignmentAnchor) []model.AlignmentConflict {
 	type pairKey struct{ base, other int }
 	groups := map[pairKey][]model.AlignmentAnchor{}
 	for _, a := range anchors {
@@ -242,6 +248,61 @@ func orderingConflicts(anchors []model.AlignmentAnchor) []model.AlignmentConflic
 				})
 			}
 		}
+	}
+	return conflicts
+}
+
+// globalOrderingConflicts 检查跨采集段对的先后关系：人工确认跨采集段顺序后，
+// 第一段事件只能对到另一采样较早一轮、末段事件只能对到较晚一轮。把第一段
+// 事件连到另一采样末尾、末段事件连到其开头（首尾逆序）时，即使两端在不同
+// 段对内、段内锚点各自单调，也构成互相矛盾的对应关系。
+//
+// 判定规则：全部锚点按基准侧采集顺序（段序 + 段内时间）排序后，另一采样侧
+// 也必须按采集顺序（段序 + 段内时间）严格单调；同一事件被两对锚点复用同样
+// 不可能成立。返回的冲突指出经过的段与锚点。
+// GlobalOrderingConflicts 是跨采集段先后关系校验的导出版本。
+func GlobalOrderingConflicts(anchors []model.AlignmentAnchor) []model.AlignmentConflict {
+	if len(anchors) < 2 {
+		return nil
+	}
+	ordered := append([]model.AlignmentAnchor(nil), anchors...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].BaseSegmentIndex != ordered[j].BaseSegmentIndex {
+			return ordered[i].BaseSegmentIndex < ordered[j].BaseSegmentIndex
+		}
+		return ordered[i].BaseTimeNs < ordered[j].BaseTimeNs
+	})
+	conflicts := []model.AlignmentConflict{}
+	for i := 1; i < len(ordered); i++ {
+		prev, cur := ordered[i-1], ordered[i]
+		if prev.BaseSegmentIndex == cur.BaseSegmentIndex && prev.OtherSegmentIndex == cur.OtherSegmentIndex {
+			// 同一采集段对内的倒序由 OrderingConflicts 报告，这里只查跨段。
+			continue
+		}
+		reversed := cur.OtherSegmentIndex < prev.OtherSegmentIndex ||
+			(cur.OtherSegmentIndex == prev.OtherSegmentIndex && cur.OtherTimeNs <= prev.OtherTimeNs)
+		sameEvent := cur.OtherMarkerID == prev.OtherMarkerID || cur.BaseMarkerID == prev.BaseMarkerID
+		if !reversed && !sameEvent {
+			continue
+		}
+		kind := "cross-segment-ordering"
+		message := fmt.Sprintf("锚点 %s（基准段 %d 事件）与 %s（基准段 %d 事件）跨采集段先后关系矛盾：基准侧按段序 %d→%d 递增，另一采样侧却要从段 %d %dns 逆序到段 %d %dns；请确认是否把第一段事件对到了另一采样末尾、末段事件对到了开头（重复报文的不同轮次）",
+			prev.ID, prev.BaseSegmentIndex, cur.ID, cur.BaseSegmentIndex,
+			prev.BaseSegmentIndex, cur.BaseSegmentIndex,
+			prev.OtherSegmentIndex, prev.OtherTimeNs, cur.OtherSegmentIndex, cur.OtherTimeNs)
+		if sameEvent && !reversed {
+			kind = "anchor-event-reuse"
+			message = fmt.Sprintf("锚点 %s 与 %s 复用了同一共同事件：同一报文不能同时对应采集顺序上先后两个事件（基准段 %d/%d）",
+				prev.ID, cur.ID, prev.BaseSegmentIndex, cur.BaseSegmentIndex)
+		}
+		conflicts = append(conflicts, model.AlignmentConflict{
+			Kind: kind, Message: message,
+			PreviousAnchorID:  prev.ID,
+			NewAnchorID:       cur.ID,
+			OtherAnchorID:     prev.ID,
+			BaseSegmentIndex:  cur.BaseSegmentIndex,
+			OtherSegmentIndex: cur.OtherSegmentIndex,
+		})
 	}
 	return conflicts
 }

@@ -30,6 +30,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name: `跨采样对齐 ${new Date().toLocaleString()}`, baseResultId, otherResultId, anchors }),
     }),
+  alignments: () => request<Alignment[]>('/api/alignments'),
+  alignment: (id: string) => request<Alignment>(`/api/alignments/${id}`),
   crossDiff: (alignmentId: string) =>
     request<CrossDiffReport>('/api/results/cross-diff', {
       method: 'POST',

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import type { Alignment, AlignmentConflict, CrossDiffReport, DemoCapture, Marker } from '../types';
 
@@ -28,6 +28,8 @@ export function CrossAlignmentPanel({ demos, onOpen }: Props) {
   const [alignment, setAlignment] = useState<Alignment>();
   const [report, setReport] = useState<CrossDiffReport>();
   const [conflicts, setConflicts] = useState<AlignmentConflict[]>([]);
+  const [savedAlignments, setSavedAlignments] = useState<Alignment[]>([]);
+  const [savedAlignmentId, setSavedAlignmentId] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -38,6 +40,39 @@ export function CrossAlignmentPanel({ demos, onOpen }: Props) {
     .filter((result) => result.id !== excludeId)
     .map((result) => ({ demo, result })));
 
+  const refreshSaved = async () => {
+    try {
+      setSavedAlignments(await api.alignments());
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  useEffect(() => { void refreshSaved(); }, []);
+
+  // 打开已保存的比较：按对齐自身记录的结果 ID 回到同一组采集段、锚点和
+  // 差异解释（store 按采样名称复用身份，刷新/重启后仍是同一组数据），
+  // 不会新建同名采样或跳入另一轮同名时间区间。
+  const reopen = async (id: string) => {
+    if (!id) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const saved = await api.alignment(id);
+      setAlignment(saved);
+      setSavedAlignmentId(saved.id);
+      setBaseResultId(saved.baseResultId);
+      setOtherResultId(saved.otherResultId);
+      setDrafts(saved.anchors.map((a) => ({ baseMarkerId: a.baseMarkerId, otherMarkerId: a.otherMarkerId })));
+      setConflicts([]);
+      setReport(await api.crossDiff(saved.id));
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const align = async () => {
     if (!baseResultId || !otherResultId) return;
     setBusy(true);
@@ -45,8 +80,10 @@ export function CrossAlignmentPanel({ demos, onOpen }: Props) {
     try {
       const saved = await api.createAlignment(baseResultId, otherResultId, drafts.filter((d) => d.baseMarkerId && d.otherMarkerId));
       setAlignment(saved.alignment);
+      setSavedAlignmentId(saved.alignment.id);
       setConflicts(saved.conflicts ?? []);
       setReport(await api.crossDiff(saved.alignment.id));
+      await refreshSaved();
     } catch (err) {
       setError(String(err));
     } finally {
@@ -71,14 +108,29 @@ export function CrossAlignmentPanel({ demos, onOpen }: Props) {
     <section className="panel cross-panel">
       <h2>跨采样共同事件对齐</h2>
       <p className="hint">选择重复脉冲等共同事件。锚点只用于新比较，不会改写采样或已保存解码版本。</p>
+      {savedAlignments.length > 0 && <div className="saved-alignments">
+        <label>已保存的比较（刷新页面或服务重启后可回到同一组段、锚点和差异解释）
+          <select value={savedAlignmentId ?? ''} onChange={(e) => { void reopen(e.target.value); }}>
+            <option value="" disabled>选择已保存比较重开…</option>
+            {savedAlignments.map((item) => {
+              const baseInfo = resultOf(demos, item.baseResultId);
+              const otherInfo = resultOf(demos, item.otherResultId);
+              return <option key={item.id} value={item.id}>
+                {item.name}（{baseInfo?.demo.capture.name ?? item.baseResultId} ↔ {otherInfo?.demo.capture.name ?? item.otherResultId}，{item.anchors.length} 锚点）
+              </option>;
+            })}
+          </select>
+        </label>
+        {alignment && <button onClick={() => { void reopen(alignment.id); }}>重新载入当前比较</button>}
+      </div>}
       <label>基准采样/版本
-        <select value={baseResultId ?? ''} onChange={(e) => { setBaseResultId(e.target.value); setAlignment(undefined); setReport(undefined); }}>
+        <select value={baseResultId ?? ''} onChange={(e) => { setBaseResultId(e.target.value); setAlignment(undefined); setReport(undefined); setSavedAlignmentId(undefined); }}>
           <option value="" disabled>选择基准结果…</option>
           {resultOptions(otherResultId).map(({ demo, result }) => <option key={result.id} value={result.id}>{demo.capture.name} · v{result.configVersion}</option>)}
         </select>
       </label>
       <label>另一采样/版本
-        <select value={otherResultId ?? ''} onChange={(e) => { setOtherResultId(e.target.value); setAlignment(undefined); setReport(undefined); }}>
+        <select value={otherResultId ?? ''} onChange={(e) => { setOtherResultId(e.target.value); setAlignment(undefined); setReport(undefined); setSavedAlignmentId(undefined); }}>
           <option value="" disabled>选择另一结果…</option>
           {resultOptions(baseResultId).map(({ demo, result }) => <option key={result.id} value={result.id}>{demo.capture.name} · v{result.configVersion}</option>)}
         </select>

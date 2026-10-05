@@ -34,6 +34,63 @@ func resetByteMarker(id string, segment int, start int64, value byte) model.Mark
 	return m
 }
 
+// 跨段顺序与段内锚点共同约束候选：即使错轮同名事件落入映射可信区间，
+// 只要它与已确认锚点的先后关系矛盾，就不能自动对上；缺唯一证据时保留歧义。
+func TestCrossResultsOrderingConstraintsFilterCandidates(t *testing.T) {
+	// 基准两次重置：段0/段1 各有一个 A（同名重复报文）。
+	base := model.Result{ID: "base", CaptureID: "c1", Markers: []model.Marker{
+		resetByteMarker("bA0", 0, 10000, 'A'),
+		resetByteMarker("bA1", 1, 10000, 'A'),
+	}}
+	// 另一采样无重置：两个 A 分别在第一轮和第二轮。
+	other := model.Result{ID: "other", CaptureID: "c2", Markers: []model.Marker{
+		resetByteMarker("oA0", 0, 50000, 'A'),
+		resetByteMarker("oA1", 0, 300000, 'A'),
+	}}
+	align := model.Alignment{
+		ID: "a1", Status: alignment.StatusReady, BaseResultID: "base", OtherResultID: "other",
+		Anchors: []model.AlignmentAnchor{
+			// 段0 的 A 已确认对到第一轮；段1 的 A 与第二轮的相对关系待定。
+			{ID: "k1", BaseMarkerID: "bA0", OtherMarkerID: "oA0", BaseTimeNs: 10000, OtherTimeNs: 50000, UncertaintyNs: 10, BaseSegmentIndex: 0, OtherSegmentIndex: 0},
+		},
+	}
+	baseChunks := []model.Chunk{
+		{ID: "c0", Index: 0, StartTime: 0, IntervalNs: 100, Levels: make([][]uint8, 1001)},
+		{ID: "c1", Index: 1, StartTime: 0, IntervalNs: 100, Levels: make([][]uint8, 1001)},
+	}
+	otherChunks := []model.Chunk{{ID: "o0", Index: 0, StartTime: 0, IntervalNs: 100, Levels: make([][]uint8, 5001)}}
+	built, mapping, err := alignment.Build(align, baseChunks, otherChunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := spiCfg("rising", "msb")
+	report := CrossResults(built, mapping, base, other, cfg, cfg, baseChunks, otherChunks)
+	// oA1（第二轮）在段1没有锚点证据：保持 unmatched，不能借用段0映射
+	// 把段1 的 A 错对到第一轮同名时间区间。
+	hasUnmatchedRound := false
+	for _, d := range report.Diffs {
+		if d.Other != nil && d.Other.ID == "oA1" && d.Cause == CauseUnmatched {
+			hasUnmatchedRound = true
+		}
+	}
+	if !hasUnmatchedRound {
+		t.Fatalf("second-round A must stay unmatched without segment-1 evidence: %+v", report.Diffs)
+	}
+
+	// 构造首尾逆序锚点后 Build 必须直接拒绝：段1 事件对到第一轮、段0 对到第二轮。
+	// （alignment.Build 层已覆盖，这里确认 compare 不会在矛盾锚点下产出结果。）
+	contradictory := model.Alignment{
+		ID: "a2", Status: alignment.StatusReady, BaseResultID: "base", OtherResultID: "other",
+		Anchors: []model.AlignmentAnchor{
+			{ID: "x1", BaseMarkerID: "bA0", OtherMarkerID: "oA1", BaseTimeNs: 10000, OtherTimeNs: 300000, UncertaintyNs: 10, BaseSegmentIndex: 0, OtherSegmentIndex: 0},
+			{ID: "x2", BaseMarkerID: "bA1", OtherMarkerID: "oA0", BaseTimeNs: 10000, OtherTimeNs: 50000, UncertaintyNs: 10, BaseSegmentIndex: 1, OtherSegmentIndex: 0},
+		},
+	}
+	if _, _, err := alignment.Build(contradictory, baseChunks, otherChunks); err == nil {
+		t.Fatal("reversed first/last segment anchors must be rejected")
+	}
+}
+
 // 采集中途时钟重置：每个采集段独立与另一份采样对齐，重复报文保留歧义，
 // 缺证据的段保持 unmatched，内容一致但残差超限解释为时钟漂移。
 func TestCrossResultsWithClockResetSegments(t *testing.T) {
